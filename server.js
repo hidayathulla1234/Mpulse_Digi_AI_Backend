@@ -7,6 +7,7 @@ const crypto = require('crypto');
 const admin = require('firebase-admin');
 const nodemailer = require('nodemailer');
 const rateLimit = require('express-rate-limit');
+const fetch = require('node-fetch');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
