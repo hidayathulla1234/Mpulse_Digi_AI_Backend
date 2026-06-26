@@ -1,403 +1,487 @@
 require('dotenv').config();
-const express = require('express');
-const cors = require('cors');
-const Razorpay = require('razorpay');
-const crypto = require('crypto');
-const admin = require('firebase-admin');
+const express    = require('express');
+const cors       = require('cors');
+const Razorpay   = require('razorpay');
+const crypto     = require('crypto');
+const admin      = require('firebase-admin');
 const nodemailer = require('nodemailer');
-const rateLimit = require('express-rate-limit');
-const fetch = require('node-fetch');
+const rateLimit  = require('express-rate-limit');
+const fetch      = require('node-fetch');
 
-const app = express();
+const app  = express();
 const PORT = process.env.PORT || 5000;
 app.set('trust proxy', 1);
 
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
 // MIDDLEWARE
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
 const allowedOrigins = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000')
-  .split(',')
-  .map(o => o.trim());
+  .split(',').map(o => o.trim());
 
 app.use(cors({
-  origin: function (origin, callback) {
-    if (!origin || allowedOrigins.includes(origin) || allowedOrigins.includes('*')) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
+  origin(origin, cb) {
+    if (!origin || allowedOrigins.includes(origin) || allowedOrigins.includes('*'))
+      cb(null, true);
+    else
+      cb(new Error('Not allowed by CORS'));
   }
 }));
-
 app.use(express.json());
+app.use('/api/', rateLimit({ windowMs: 15 * 60 * 1000, max: 60, message: { error: 'Too many requests. Try again later.' } }));
 
-const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 60,
-  message: { error: 'Too many requests. Please try again later.' }
-});
-app.use('/api/', apiLimiter);
+// ─────────────────────────────────────────────────────────────
+// FIREBASE
+// ─────────────────────────────────────────────────────────────
+const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT_JSON
+  ? JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON)
+  : require('./serviceAccountKey.json');
 
-// ─────────────────────────────────────────────
-// FIREBASE ADMIN INIT
-// ─────────────────────────────────────────────
-let serviceAccount;
-if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
-  serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
-} else {
-  serviceAccount = require('./serviceAccountKey.json');
-}
-
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount)
-});
-
+admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
 const db = admin.firestore();
 
-// ─────────────────────────────────────────────
-// RAZORPAY INIT
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// RAZORPAY
+// ─────────────────────────────────────────────────────────────
 const razorpay = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID,
+  key_id:     process.env.RAZORPAY_KEY_ID,
   key_secret: process.env.RAZORPAY_KEY_SECRET
 });
 
-// ─────────────────────────────────────────────
-// EMAIL (NODEMAILER) SETUP — single Gmail account only
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// EMAIL  (Gmail — mpulsedigitalai@gmail.com)
+// ─────────────────────────────────────────────────────────────
 const transporter = nodemailer.createTransport({
   service: 'gmail',
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS
-  }
+  auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
 });
 
-function sendNotificationEmail(subject, htmlBody) {
+function sendEmail(subject, html) {
   transporter.sendMail({
     from: `"MPULSE DIGITAL AI" <${process.env.EMAIL_USER}>`,
-    to: process.env.NOTIFY_EMAIL || 'mpulsedigitalai@gmail.com',
-    subject,
-    html: htmlBody
-  }).catch(err => console.error('Email send failed:', err));
+    to:   process.env.NOTIFY_EMAIL || 'mpulsedigitalai@gmail.com',
+    subject, html
+  }).catch(err => console.error('Email error:', err.message));
 }
 
-// ─────────────────────────────────────────────
-// GOOGLE SHEETS LOGGER — single Sheet/account only (mpulsedigitalai@gmail.com)
-// ─────────────────────────────────────────────
-async function logToGoogleSheet(formType, payload) {
-  const webhookUrl = process.env.GOOGLE_SHEETS_WEBHOOK_URL;
-  if (!webhookUrl) return;
-
+// ─────────────────────────────────────────────────────────────
+// GOOGLE SHEETS  (Apps-Script webhook → mpulsedigitalai@gmail.com)
+// Set GOOGLE_SHEETS_WEBHOOK_URL in .env to your Apps Script URL.
+// The script should read req.body.formType and req.body.payload
+// and append a row to the matching sheet tab.
+// ─────────────────────────────────────────────────────────────
+async function logToSheets(formType, payload) {
+  const url = process.env.GOOGLE_SHEETS_WEBHOOK_URL;
+  if (!url) { console.warn('GOOGLE_SHEETS_WEBHOOK_URL not set — skipping Sheets log'); return; }
   try {
-    await fetch(webhookUrl, {
+    await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ formType, payload })
     });
-  } catch (err) {
-    console.error(`Google Sheets logging failed for ${formType}:`, err);
-  }
+  } catch (err) { console.error('Sheets log error:', err.message); }
 }
 
-// ─────────────────────────────────────────────
-// FIRESTORE LOGGER (generic helper)
-// ─────────────────────────────────────────────
-async function saveToFirestore(collectionName, docId, data) {
+// ─────────────────────────────────────────────────────────────
+// FIRESTORE HELPER
+// ─────────────────────────────────────────────────────────────
+async function saveDoc(collection, docId, data) {
   try {
-    await db.collection(collectionName).doc(docId).set({
+    await db.collection(collection).doc(docId).set({
       ...data,
       createdAt: admin.firestore.FieldValue.serverTimestamp()
     });
-  } catch (err) {
-    console.error(`Firestore save failed for ${collectionName}:`, err);
-  }
+  } catch (err) { console.error(`Firestore save error (${collection}):`, err.message); }
 }
 
-// ─────────────────────────────────────────────
-// PAYMENT PLAN CALCULATOR
-// ─────────────────────────────────────────────
-// Course base price: ₹30,000
-// One-time payment: ₹3,000 discount → ₹27,000
-// 3 Installments: full ₹30,000, split 50% / 25% / 25%, each due 20 days apart
-const COURSE_BASE_PRICE = 30000;
-const ONE_TIME_DISCOUNT = 3000;
+// ─────────────────────────────────────────────────────────────
+// PAYMENT PLAN CONFIG
+//
+//  One-time:      ₹28,000  (student saves ₹2,000 off ₹30,000)
+//  Installment 1: ₹15,000  (due at enrollment)
+//  Installment 2: ₹15,000  (due 1 month after enrollment)
+//  Total via EMI: ₹30,000
+// ─────────────────────────────────────────────────────────────
+const PRICE_ONE_TIME    = 28000;
+const PRICE_INSTALLMENT = 15000;   // each of 2 installments
+const PRICE_FULL        = 30000;   // total if paying by EMI
 
-function getPaymentPlanDetails(planType, installmentNumber) {
+function getPlan(planType, installmentNumber) {
   if (planType === 'one-time') {
-    return { amount: COURSE_BASE_PRICE - ONE_TIME_DISCOUNT, label: 'One-Time Payment (₹3,000 discount applied)' };
+    return { amount: PRICE_ONE_TIME, label: 'Full Payment — ₹28,000 (save ₹2,000)' };
   }
   if (planType === 'installments') {
-    const num = parseInt(installmentNumber, 10);
-    if (num === 1) return { amount: Math.round(COURSE_BASE_PRICE * 0.5), label: 'Installment 1 of 3 (50%)' };
-    if (num === 2) return { amount: Math.round(COURSE_BASE_PRICE * 0.25), label: 'Installment 2 of 3 (25%) — due 20 days after enrollment' };
-    if (num === 3) return { amount: Math.round(COURSE_BASE_PRICE * 0.25), label: 'Installment 3 of 3 (25%) — due 40 days after enrollment' };
+    const n = parseInt(installmentNumber, 10);
+    if (n === 1) return { amount: PRICE_INSTALLMENT, label: 'Installment 1 of 2 — ₹15,000 (due at enrollment)' };
+    if (n === 2) return { amount: PRICE_INSTALLMENT, label: 'Installment 2 of 2 — ₹15,000 (due 1 month after enrollment)' };
   }
   return null;
 }
 
-function calculateDueDates(enrollmentDate) {
-  const base = new Date(enrollmentDate);
-  const due2 = new Date(base); due2.setDate(due2.getDate() + 20);
-  const due3 = new Date(base); due3.setDate(due3.getDate() + 40);
-  return {
-    installment2DueDate: due2.toISOString().split('T')[0],
-    installment3DueDate: due3.toISOString().split('T')[0]
-  };
+function addOneMonth(dateStr) {
+  const d = new Date(dateStr);
+  d.setMonth(d.getMonth() + 1);
+  return d.toISOString().split('T')[0];
 }
 
-// ─────────────────────────────────────────────
-// HEALTH CHECK
-// ─────────────────────────────────────────────
-app.get('/', (req, res) => {
-  res.json({ status: 'ok', service: 'MPULSE DIGITAL AI backend' });
-});
+function genId(prefix) {
+  return `${prefix}-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`;
+}
 
-// ─────────────────────────────────────────────
-// ROUTE: GET PAYMENT PLAN OPTIONS
-// ─────────────────────────────────────────────
-app.get('/api/payment-plans', (req, res) => {
+// ─────────────────────────────────────────────────────────────
+// HEALTH CHECK
+// ─────────────────────────────────────────────────────────────
+app.get('/', (_, res) => res.json({ status: 'ok', service: 'MPULSE DIGITAL AI backend' }));
+
+// ─────────────────────────────────────────────────────────────
+// GET PAYMENT PLANS  (optional — used if you want to fetch from frontend)
+// ─────────────────────────────────────────────────────────────
+app.get('/api/payment-plans', (_, res) => {
   res.json({
-    basePrice: COURSE_BASE_PRICE,
-    oneTime: {
-      amount: COURSE_BASE_PRICE - ONE_TIME_DISCOUNT,
-      discount: ONE_TIME_DISCOUNT,
-      label: 'Pay in Full — Save ₹3,000'
-    },
+    oneTime:      { amount: PRICE_ONE_TIME,    label: 'Pay in Full — ₹28,000 (save ₹2,000)' },
     installments: {
-      totalAmount: COURSE_BASE_PRICE,
+      totalAmount: PRICE_FULL,
       schedule: [
-        { number: 1, percent: 50, amount: Math.round(COURSE_BASE_PRICE * 0.5), dueLabel: 'Due at enrollment' },
-        { number: 2, percent: 25, amount: Math.round(COURSE_BASE_PRICE * 0.25), dueLabel: 'Due 20 days after enrollment' },
-        { number: 3, percent: 25, amount: Math.round(COURSE_BASE_PRICE * 0.25), dueLabel: 'Due 40 days after enrollment' }
+        { number: 1, amount: PRICE_INSTALLMENT, dueLabel: 'Due at enrollment' },
+        { number: 2, amount: PRICE_INSTALLMENT, dueLabel: 'Due 1 month after enrollment' }
       ]
     }
   });
 });
 
-// ─────────────────────────────────────────────
-// ROUTE: CREATE RAZORPAY ORDER
-// ─────────────────────────────────────────────
-// IMPORTANT: This now matches the frontend exactly — it expects
-// planType + installmentNumber (NOT a raw "amount"), and calculates
-// the real amount itself server-side so it can never be tampered with.
+// ─────────────────────────────────────────────────────────────
+// CREATE RAZORPAY ORDER
+// Called from frontend startRazorpay() before opening checkout.
+// Amount is calculated SERVER-SIDE — never trust frontend amount.
+// ─────────────────────────────────────────────────────────────
 app.post('/api/create-order', async (req, res) => {
   try {
     const { planType, installmentNumber, courseName, studentName, studentPhone } = req.body;
 
-    if (!planType || !courseName || !studentName || !studentPhone) {
-      return res.status(400).json({ error: 'planType, courseName, studentName, and studentPhone are required.' });
-    }
+    if (!planType || !courseName || !studentName || !studentPhone)
+      return res.status(400).json({ error: 'planType, courseName, studentName and studentPhone are required.' });
 
-    const plan = getPaymentPlanDetails(planType, installmentNumber);
-    if (!plan) {
-      return res.status(400).json({ error: 'Invalid payment plan specified.' });
-    }
+    const plan = getPlan(planType, installmentNumber);
+    if (!plan) return res.status(400).json({ error: 'Invalid payment plan.' });
 
-    const options = {
-      amount: plan.amount * 100, // paise
+    const order = await razorpay.orders.create({
+      amount:   plan.amount * 100,   // paise
       currency: 'INR',
-      receipt: 'rcpt_' + Date.now(),
-      notes: { courseName, studentName, studentPhone, planType, installmentNumber: installmentNumber || '' }
-    };
-
-    const order = await razorpay.orders.create(options);
+      receipt:  'rcpt_' + Date.now(),
+      notes:    { courseName, studentName, studentPhone, planType, installmentNumber: installmentNumber || '' }
+    });
 
     res.json({
-      orderId: order.id,
-      amount: order.amount,
-      currency: order.currency,
-      keyId: process.env.RAZORPAY_KEY_ID,
+      orderId:   order.id,
+      amount:    order.amount,
+      currency:  order.currency,
+      keyId:     process.env.RAZORPAY_KEY_ID,
       planLabel: plan.label
     });
   } catch (err) {
-    console.error('Error creating Razorpay order:', err);
-    res.status(500).json({ error: 'Failed to create order. Please try again.' });
+    console.error('create-order error:', err);
+    res.status(500).json({ error: 'Failed to create Razorpay order.' });
   }
 });
 
-// ─────────────────────────────────────────────
-// ROUTE: VERIFY PAYMENT (after Razorpay checkout completes)
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// VERIFY PAYMENT  (called after Razorpay checkout succeeds)
+// Saves full enrollment record to:
+//   • Firestore  → collection: "enrollments"
+//   • Google Sheets → tab: "Enrollments"
+//   • Email notification → mpulsedigitalai@gmail.com
+// ─────────────────────────────────────────────────────────────
 app.post('/api/verify-payment', async (req, res) => {
   try {
-    const { razorpay_order_id, razorpay_payment_id, razorpay_signature, enrollment, planType, installmentNumber } = req.body;
+    const {
+      razorpay_order_id, razorpay_payment_id, razorpay_signature,
+      enrollment, planType, installmentNumber
+    } = req.body;
 
-    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature)
       return res.status(400).json({ error: 'Missing Razorpay payment fields.' });
-    }
 
-    const body = razorpay_order_id + '|' + razorpay_payment_id;
-    const expectedSignature = crypto
+    // ── Signature verification ──
+    const expected = crypto
       .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
-      .update(body.toString())
+      .update(`${razorpay_order_id}|${razorpay_payment_id}`)
       .digest('hex');
 
-    if (expectedSignature !== razorpay_signature) {
-      return res.status(400).json({ verified: false, error: 'Payment signature verification failed.' });
-    }
+    if (expected !== razorpay_signature)
+      return res.status(400).json({ verified: false, error: 'Payment signature mismatch.' });
 
-    const plan = getPaymentPlanDetails(planType, installmentNumber);
-    const bookingId = 'MPF-' + new Date().getFullYear() + '-' + Math.floor(100000 + Math.random() * 900000);
-    const today = new Date().toISOString().split('T')[0];
+    const plan      = getPlan(planType, installmentNumber);
+    const bookingId = genId('MPF');
+    const today     = new Date().toISOString().split('T')[0];
 
     const record = {
       bookingId,
       razorpay_order_id,
       razorpay_payment_id,
-      name: enrollment?.name || '',
-      phone: enrollment?.phone || '',
-      email: enrollment?.email || '',
-      course: enrollment?.course || '',
-      planType: planType || '',
-      installmentNumber: installmentNumber || '',
-      planLabel: plan ? plan.label : '',
-      amountPaid: plan ? plan.amount : 0,
-      date: enrollment?.date || '',
-      slot: enrollment?.slot || '',
-      mode: enrollment?.mode || '',
-      status: 'paid'
+      name:              enrollment?.name    || '',
+      phone:             enrollment?.phone   || '',
+      email:             enrollment?.email   || '',
+      status:            enrollment?.status  || '',
+      course:            enrollment?.course  || '',
+      message:           enrollment?.message || '',
+      planType:          planType            || '',
+      installmentNumber: installmentNumber   || '',
+      planLabel:         plan ? plan.label   : '',
+      amountPaid:        plan ? plan.amount  : 0,
+      date:              enrollment?.date    || '',
+      slot:              enrollment?.slot    || '',
+      mode:              enrollment?.mode    || '',
+      type:              'enrollment',
+      paymentStatus:     'paid'
     };
 
+    // Track installment 2 due date when installment 1 is paid
     if (planType === 'installments' && parseInt(installmentNumber, 10) === 1) {
-      const dueDates = calculateDueDates(today);
-      record.installment2DueDate = dueDates.installment2DueDate;
-      record.installment3DueDate = dueDates.installment3DueDate;
-      record.installment2Paid = false;
-      record.installment3Paid = false;
-      record.paymentStatus = 'on_track';
+      record.installment2DueDate = addOneMonth(today);
+      record.installment2Paid    = false;
+      record.paymentStatus       = 'installment_1_paid';
     }
-    if (planType === 'installments' && parseInt(installmentNumber, 10) > 1) {
-      record.paymentStatus = 'completed_this_installment';
+    if (planType === 'installments' && parseInt(installmentNumber, 10) === 2) {
+      record.paymentStatus = 'fully_paid';
     }
 
-    // Save payment record to Firebase
-    await saveToFirestore('enrollments', bookingId, record);
+    // ── Save to Firestore ──
+    await saveDoc('enrollments', bookingId, record);
 
-    // Log to Google Sheets — single account (mpulsedigitalai@gmail.com)
-    logToGoogleSheet('Enrollments', {
-      'Booking ID': bookingId,
-      'Name': record.name,
-      'Phone': record.phone,
-      'Email': record.email,
-      'Course': record.course,
-      'Plan Type': record.planType,
-      'Installment #': record.installmentNumber,
-      'Plan Label': record.planLabel,
-      'Amount Paid': record.amountPaid,
-      'Demo Date': record.date,
-      'Time Slot': record.slot,
-      'Mode': record.mode,
-      'Razorpay Order ID': razorpay_order_id,
-      'Razorpay Payment ID': razorpay_payment_id,
-      'Status': 'paid'
+    // ── Log to Google Sheets ──
+    await logToSheets('Enrollments', {
+      'Booking ID':           bookingId,
+      'Name':                 record.name,
+      'Phone':                record.phone,
+      'Email':                record.email,
+      'Student Status':       record.status,
+      'Course':               record.course,
+      'Message':              record.message,
+      'Plan Type':            record.planType,
+      'Installment #':        record.installmentNumber,
+      'Plan Label':           record.planLabel,
+      'Amount Paid (₹)':      record.amountPaid,
+      'Demo Date':            record.date,
+      'Time Slot':            record.slot,
+      'Mode':                 record.mode,
+      'Razorpay Order ID':    razorpay_order_id,
+      'Razorpay Payment ID':  razorpay_payment_id,
+      'Payment Status':       record.paymentStatus,
+      'Inst. 2 Due Date':     record.installment2DueDate || ''
     });
 
-    // Send email notification
-    sendNotificationEmail(
+    // ── Email notification ──
+    sendEmail(
       `🎉 Payment Received: ${record.course} — ${record.name}`,
-      `<div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;">
-        <h2 style="color:#6d28d9;">New Payment Received</h2>
+      `<div style="font-family:Arial,sans-serif;max-width:580px;">
+        <h2 style="color:#6d28d9;">New Enrollment Payment</h2>
         <table style="width:100%;border-collapse:collapse;font-size:14px;">
-          <tr><td style="padding:8px;font-weight:bold;">Booking ID</td><td style="padding:8px;">${bookingId}</td></tr>
-          <tr><td style="padding:8px;font-weight:bold;">Student Name</td><td style="padding:8px;">${record.name}</td></tr>
-          <tr><td style="padding:8px;font-weight:bold;">Phone</td><td style="padding:8px;">${record.phone}</td></tr>
-          <tr><td style="padding:8px;font-weight:bold;">Email</td><td style="padding:8px;">${record.email || '—'}</td></tr>
-          <tr><td style="padding:8px;font-weight:bold;">Course</td><td style="padding:8px;">${record.course}</td></tr>
-          <tr><td style="padding:8px;font-weight:bold;">Payment Plan</td><td style="padding:8px;">${record.planLabel}</td></tr>
-          <tr><td style="padding:8px;font-weight:bold;">Amount Paid</td><td style="padding:8px;">₹${record.amountPaid}</td></tr>
-          <tr><td style="padding:8px;font-weight:bold;">Razorpay Payment ID</td><td style="padding:8px;">${razorpay_payment_id}</td></tr>
+          <tr><td style="padding:8px;font-weight:bold;background:#f5f3ff;">Booking ID</td><td style="padding:8px;">${bookingId}</td></tr>
+          <tr><td style="padding:8px;font-weight:bold;background:#f5f3ff;">Name</td><td style="padding:8px;">${record.name}</td></tr>
+          <tr><td style="padding:8px;font-weight:bold;background:#f5f3ff;">Phone</td><td style="padding:8px;">${record.phone}</td></tr>
+          <tr><td style="padding:8px;font-weight:bold;background:#f5f3ff;">Email</td><td style="padding:8px;">${record.email || '—'}</td></tr>
+          <tr><td style="padding:8px;font-weight:bold;background:#f5f3ff;">Student Status</td><td style="padding:8px;">${record.status || '—'}</td></tr>
+          <tr><td style="padding:8px;font-weight:bold;background:#f5f3ff;">Course</td><td style="padding:8px;">${record.course}</td></tr>
+          <tr><td style="padding:8px;font-weight:bold;background:#f5f3ff;">Payment Plan</td><td style="padding:8px;">${record.planLabel}</td></tr>
+          <tr><td style="padding:8px;font-weight:bold;background:#f5f3ff;">Amount Paid</td><td style="padding:8px;color:#059669;font-weight:bold;">₹${record.amountPaid.toLocaleString('en-IN')}</td></tr>
+          <tr><td style="padding:8px;font-weight:bold;background:#f5f3ff;">Demo Date</td><td style="padding:8px;">${record.date || '—'}</td></tr>
+          <tr><td style="padding:8px;font-weight:bold;background:#f5f3ff;">Time Slot</td><td style="padding:8px;">${record.slot || '—'}</td></tr>
+          <tr><td style="padding:8px;font-weight:bold;background:#f5f3ff;">Mode</td><td style="padding:8px;">${record.mode || '—'}</td></tr>
+          <tr><td style="padding:8px;font-weight:bold;background:#f5f3ff;">Razorpay Payment ID</td><td style="padding:8px;">${razorpay_payment_id}</td></tr>
+          ${record.installment2DueDate ? `<tr><td style="padding:8px;font-weight:bold;background:#fef3c7;">Instalment 2 Due</td><td style="padding:8px;color:#d97706;">${record.installment2DueDate}</td></tr>` : ''}
         </table>
+        ${record.installment2DueDate ? `<p style="margin-top:12px;font-size:13px;color:#92400e;">⚠️ Please follow up for Installment 2 (₹15,000) on <strong>${record.installment2DueDate}</strong>.</p>` : ''}
       </div>`
     );
 
     res.json({ verified: true, bookingId, amountPaid: record.amountPaid, planLabel: record.planLabel });
   } catch (err) {
-    console.error('Error verifying payment:', err);
+    console.error('verify-payment error:', err);
     res.status(500).json({ error: 'Payment verification failed due to a server error.' });
   }
 });
 
-// ─────────────────────────────────────────────
-// ROUTE: ENQUIRY FORM
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// FREE DEMO BOOKING  (AI courses — no payment)
+// Called from frontend confirmFreeDemo()
+// Saves to:
+//   • Firestore  → collection: "demo_bookings"
+//   • Google Sheets → tab: "Demo Bookings"
+//   • Email notification
+// ─────────────────────────────────────────────────────────────
+app.post('/api/demo-booking', async (req, res) => {
+  try {
+    const { name, phone, email, status, course, date, slot, mode, message } = req.body;
+
+    if (!name || !phone)
+      return res.status(400).json({ error: 'Name and phone are required.' });
+
+    const bookingId = genId('MPD');
+
+    const record = {
+      bookingId,
+      name,
+      phone,
+      email:   email   || '',
+      status:  status  || '',
+      course:  course  || '',
+      date:    date    || '',
+      slot:    slot    || '',
+      mode:    mode    || '',
+      message: message || '',
+      type:    'demo_booking',
+      paymentStatus: 'free_demo'
+    };
+
+    // ── Save to Firestore ──
+    await saveDoc('demo_bookings', bookingId, record);
+
+    // ── Log to Google Sheets ──
+    await logToSheets('Demo Bookings', {
+      'Booking ID':     bookingId,
+      'Name':           record.name,
+      'Phone':          record.phone,
+      'Email':          record.email,
+      'Student Status': record.status,
+      'Course':         record.course,
+      'Demo Date':      record.date,
+      'Time Slot':      record.slot,
+      'Mode':           record.mode,
+      'Message':        record.message
+    });
+
+    // ── Email notification ──
+    sendEmail(
+      `📅 Free Demo Booked: ${record.course} — ${record.name}`,
+      `<div style="font-family:Arial,sans-serif;max-width:580px;">
+        <h2 style="color:#6d28d9;">Free Demo Class Booking</h2>
+        <table style="width:100%;border-collapse:collapse;font-size:14px;">
+          <tr><td style="padding:8px;font-weight:bold;background:#f5f3ff;">Booking ID</td><td style="padding:8px;">${bookingId}</td></tr>
+          <tr><td style="padding:8px;font-weight:bold;background:#f5f3ff;">Name</td><td style="padding:8px;">${record.name}</td></tr>
+          <tr><td style="padding:8px;font-weight:bold;background:#f5f3ff;">Phone</td><td style="padding:8px;">${record.phone}</td></tr>
+          <tr><td style="padding:8px;font-weight:bold;background:#f5f3ff;">Email</td><td style="padding:8px;">${record.email || '—'}</td></tr>
+          <tr><td style="padding:8px;font-weight:bold;background:#f5f3ff;">Student Status</td><td style="padding:8px;">${record.status || '—'}</td></tr>
+          <tr><td style="padding:8px;font-weight:bold;background:#f5f3ff;">Course</td><td style="padding:8px;">${record.course}</td></tr>
+          <tr><td style="padding:8px;font-weight:bold;background:#f5f3ff;">Demo Date</td><td style="padding:8px;">${record.date || '—'}</td></tr>
+          <tr><td style="padding:8px;font-weight:bold;background:#f5f3ff;">Time Slot</td><td style="padding:8px;">${record.slot || '—'}</td></tr>
+          <tr><td style="padding:8px;font-weight:bold;background:#f5f3ff;">Mode</td><td style="padding:8px;">${record.mode || '—'}</td></tr>
+          <tr><td style="padding:8px;font-weight:bold;background:#f5f3ff;">Message</td><td style="padding:8px;">${record.message || '—'}</td></tr>
+        </table>
+        <p style="margin-top:12px;font-size:13px;color:#6d28d9;">📞 Call within 2 hours to confirm this slot.</p>
+      </div>`
+    );
+
+    res.json({ success: true, bookingId });
+  } catch (err) {
+    console.error('demo-booking error:', err);
+    res.status(500).json({ error: 'Could not save demo booking.' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// ENQUIRY FORM  (contact section on the page)
+// ─────────────────────────────────────────────────────────────
 app.post('/api/enquiry', async (req, res) => {
   try {
     const { name, phone, course, message } = req.body;
-    if (!name || !phone) {
-      return res.status(400).json({ error: 'Name and phone are required.' });
-    }
+    if (!name || !phone) return res.status(400).json({ error: 'Name and phone are required.' });
 
-    logToGoogleSheet('Enquiries', { 'Name': name, 'Phone': phone, 'Course': course || '', 'Message': message || '' });
-    sendNotificationEmail(
-      `📩 New Enquiry from ${name}`,
-      `<div style="font-family:Arial,sans-serif;"><h3>New Website Enquiry</h3><p><strong>Name:</strong> ${name}</p><p><strong>Phone:</strong> ${phone}</p><p><strong>Course:</strong> ${course || '—'}</p><p><strong>Message:</strong> ${message || '—'}</p></div>`
+    const docId = 'ENQ-' + Date.now();
+    await saveDoc('enquiries', docId, { name, phone, course: course || '', message: message || '', type: 'enquiry' });
+
+    await logToSheets('Enquiries', {
+      'Name': name, 'Phone': phone, 'Course': course || '', 'Message': message || ''
+    });
+
+    sendEmail(
+      `📩 New Enquiry: ${name}`,
+      `<div style="font-family:Arial,sans-serif;">
+        <h3 style="color:#6d28d9;">Website Enquiry</h3>
+        <p><b>Name:</b> ${name}</p>
+        <p><b>Phone:</b> ${phone}</p>
+        <p><b>Course:</b> ${course || '—'}</p>
+        <p><b>Message:</b> ${message || '—'}</p>
+      </div>`
     );
 
     res.json({ success: true });
   } catch (err) {
-    console.error('Error saving enquiry:', err);
-    res.status(500).json({ error: 'Could not submit enquiry. Please try again.' });
+    console.error('enquiry error:', err);
+    res.status(500).json({ error: 'Could not submit enquiry.' });
   }
 });
 
-// ─────────────────────────────────────────────
-// ROUTE: CALLBACK REQUEST
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// CALLBACK REQUEST
+// ─────────────────────────────────────────────────────────────
 app.post('/api/callback', async (req, res) => {
   try {
     const { name, phone, preferredTime } = req.body;
-    if (!name || !phone) {
-      return res.status(400).json({ error: 'Name and phone are required.' });
-    }
+    if (!name || !phone) return res.status(400).json({ error: 'Name and phone are required.' });
 
-    logToGoogleSheet('Callbacks', { 'Name': name, 'Phone': phone, 'Preferred Time': preferredTime || 'Anytime', 'Status': 'pending' });
-    sendNotificationEmail(
-      `📞 Callback Request from ${name}`,
-      `<div style="font-family:Arial,sans-serif;"><h3>New Callback Request</h3><p><strong>Name:</strong> ${name}</p><p><strong>Phone:</strong> ${phone}</p><p><strong>Preferred Time:</strong> ${preferredTime || 'Anytime'}</p></div>`
+    const docId = 'CB-' + Date.now();
+    await saveDoc('callbacks', docId, { name, phone, preferredTime: preferredTime || 'Anytime', type: 'callback' });
+
+    await logToSheets('Callbacks', {
+      'Name': name, 'Phone': phone, 'Preferred Time': preferredTime || 'Anytime', 'Status': 'pending'
+    });
+
+    sendEmail(
+      `📞 Callback Request: ${name}`,
+      `<div style="font-family:Arial,sans-serif;">
+        <h3 style="color:#6d28d9;">Callback Request</h3>
+        <p><b>Name:</b> ${name}</p>
+        <p><b>Phone:</b> ${phone}</p>
+        <p><b>Preferred Time:</b> ${preferredTime || 'Anytime'}</p>
+      </div>`
     );
 
     res.json({ success: true });
   } catch (err) {
-    console.error('Error saving callback request:', err);
-    res.status(500).json({ error: 'Could not submit callback request. Please try again.' });
+    console.error('callback error:', err);
+    res.status(500).json({ error: 'Could not submit callback request.' });
   }
 });
 
-// ─────────────────────────────────────────────
-// ROUTE: SIGN-UP (popup form) — THIS WAS MISSING BEFORE
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// SIGN-UP POPUP
+// ─────────────────────────────────────────────────────────────
 app.post('/api/signup', async (req, res) => {
   try {
     const { name, phone, email } = req.body;
-    if (!name || !phone) {
-      return res.status(400).json({ error: 'Name and phone are required.' });
-    }
+    if (!name || !phone) return res.status(400).json({ error: 'Name and phone are required.' });
 
-    logToGoogleSheet('Signups', { 'Name': name, 'Phone': phone, 'Email': email || '' });
-    sendNotificationEmail(
-      `🎯 New Sign-Up from ${name}`,
-      `<div style="font-family:Arial,sans-serif;"><h3>New Pop-Up Sign-Up</h3><p><strong>Name:</strong> ${name}</p><p><strong>Phone:</strong> ${phone}</p><p><strong>Email:</strong> ${email || '—'}</p></div>`
+    const docId = 'SU-' + Date.now();
+    await saveDoc('signups', docId, { name, phone, email: email || '', type: 'signup' });
+
+    await logToSheets('Signups', { 'Name': name, 'Phone': phone, 'Email': email || '' });
+
+    sendEmail(
+      `🎯 New Sign-Up: ${name}`,
+      `<div style="font-family:Arial,sans-serif;">
+        <h3 style="color:#6d28d9;">Pop-Up Sign-Up</h3>
+        <p><b>Name:</b> ${name}</p>
+        <p><b>Phone:</b> ${phone}</p>
+        <p><b>Email:</b> ${email || '—'}</p>
+      </div>`
     );
 
     res.json({ success: true });
   } catch (err) {
-    console.error('Error saving signup:', err);
-    res.status(500).json({ error: 'Could not submit sign-up. Please try again.' });
+    console.error('signup error:', err);
+    res.status(500).json({ error: 'Could not save sign-up.' });
   }
 });
 
-// ─────────────────────────────────────────────
-// ROUTE: CHECK OVERDUE INSTALLMENT STUDENTS (admin-only)
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// ADMIN — CHECK OVERDUE INSTALLMENTS
+// GET /api/overdue-students?adminKey=YOUR_KEY
+// ─────────────────────────────────────────────────────────────
 app.get('/api/overdue-students', async (req, res) => {
   try {
-    const { adminKey } = req.query;
-    if (adminKey !== process.env.ADMIN_KEY) {
+    if (req.query.adminKey !== process.env.ADMIN_KEY)
       return res.status(403).json({ error: 'Unauthorized.' });
-    }
 
-    const today = new Date().toISOString().split('T')[0];
+    const today    = new Date().toISOString().split('T')[0];
     const snapshot = await db.collection('enrollments')
       .where('planType', '==', 'installments')
       .where('installmentNumber', '==', 1)
@@ -405,59 +489,55 @@ app.get('/api/overdue-students', async (req, res) => {
 
     const overdue = [];
     snapshot.forEach(doc => {
-      const data = doc.data();
-      if (data.paymentStatus === 'completed') return;
-
-      const isOverdueOn2 = !data.installment2Paid && data.installment2DueDate && data.installment2DueDate < today;
-      const isOverdueOn3 = !data.installment3Paid && data.installment3DueDate && data.installment3DueDate < today;
-
-      if (isOverdueOn2 || isOverdueOn3) {
+      const d = doc.data();
+      if (d.installment2Paid) return;
+      if (d.installment2DueDate && d.installment2DueDate < today) {
         overdue.push({
-          bookingId: data.bookingId,
-          name: data.name,
-          phone: data.phone,
-          email: data.email,
-          course: data.course,
-          overdueOn: isOverdueOn2 ? 'Installment 2 (₹7,500)' : 'Installment 3 (₹7,500)',
-          dueDate: isOverdueOn2 ? data.installment2DueDate : data.installment3DueDate,
-          daysOverdue: Math.floor((new Date(today) - new Date(isOverdueOn2 ? data.installment2DueDate : data.installment3DueDate)) / (1000 * 60 * 60 * 24))
+          bookingId:   d.bookingId,
+          name:        d.name,
+          phone:       d.phone,
+          email:       d.email,
+          course:      d.course,
+          overdueOn:   'Installment 2 — ₹15,000',
+          dueDate:     d.installment2DueDate,
+          daysOverdue: Math.floor((new Date(today) - new Date(d.installment2DueDate)) / 86400000)
         });
       }
     });
 
     res.json({ overdueCount: overdue.length, overdueStudents: overdue });
   } catch (err) {
-    console.error('Error checking overdue students:', err);
-    res.status(500).json({ error: 'Could not check overdue students.' });
+    console.error('overdue-students error:', err);
+    res.status(500).json({ error: 'Could not fetch overdue students.' });
   }
 });
 
-// ─────────────────────────────────────────────
-// ROUTE: MARK AN INSTALLMENT AS PAID MANUALLY (admin-only)
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// ADMIN — MARK INSTALLMENT 2 AS PAID MANUALLY
+// POST /api/mark-installment-paid
+// Body: { adminKey, bookingId }
+// ─────────────────────────────────────────────────────────────
 app.post('/api/mark-installment-paid', async (req, res) => {
   try {
-    const { adminKey, bookingId, installmentNumber } = req.body;
-    if (adminKey !== process.env.ADMIN_KEY) {
+    const { adminKey, bookingId } = req.body;
+    if (adminKey !== process.env.ADMIN_KEY)
       return res.status(403).json({ error: 'Unauthorized.' });
-    }
-    if (!bookingId || !installmentNumber) {
-      return res.status(400).json({ error: 'bookingId and installmentNumber are required.' });
-    }
+    if (!bookingId)
+      return res.status(400).json({ error: 'bookingId is required.' });
 
-    const field = installmentNumber === 2 ? 'installment2Paid' : 'installment3Paid';
-    await db.collection('enrollments').doc(bookingId).update({ [field]: true });
+    await db.collection('enrollments').doc(bookingId).update({
+      installment2Paid: true,
+      paymentStatus:    'fully_paid'
+    });
 
     res.json({ success: true });
   } catch (err) {
-    console.error('Error marking installment paid:', err);
+    console.error('mark-installment-paid error:', err);
     res.status(500).json({ error: 'Could not update installment status.' });
   }
 });
 
-// ─────────────────────────────────────────────
-// START SERVER
-// ─────────────────────────────────────────────
-app.listen(PORT, () => {
-  console.log(`✅ MPULSE backend running on port ${PORT}`);
-});
+// ─────────────────────────────────────────────────────────────
+// START
+// ─────────────────────────────────────────────────────────────
+app.listen(PORT, () => console.log(`✅  MPULSE backend running on port ${PORT}`));
