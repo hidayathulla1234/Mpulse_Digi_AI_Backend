@@ -188,6 +188,122 @@ app.post('/api/create-order', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────
+// TEST ENV VARS
+// GET /api/test-env
+// ─────────────────────────────────────────────────────────────
+app.get('/api/test-env', (req, res) => {
+  res.json({
+    razorpay_key_id_set:  !!process.env.RAZORPAY_KEY_ID,
+    razorpay_secret_set:  !!process.env.RAZORPAY_KEY_SECRET,
+    firebase_set:         !!process.env.FIREBASE_SERVICE_ACCOUNT_JSON,
+    sheets_webhook_set:   !!process.env.GOOGLE_SHEETS_WEBHOOK_URL,
+    email_user_set:       !!process.env.EMAIL_USER,
+    sheets_url_preview:   (process.env.GOOGLE_SHEETS_WEBHOOK_URL || '').slice(0, 60) + '...'
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// TEST SHEETS — fires a test row directly to Enrollments tab
+// GET /api/test-sheets
+// ─────────────────────────────────────────────────────────────
+app.get('/api/test-sheets', async (req, res) => {
+  try {
+    await logToSheets('Enrollments', {
+      'Booking ID':          'TEST-001',
+      'Name':                'Test Student',
+      'Phone':               '9999999999',
+      'Email':               'test@test.com',
+      'Student Status':      'Working Professional',
+      'Course':              'AI-Powered Digital Marketing Course',
+      'Message':             'Test row from /api/test-sheets',
+      'Plan Type':           'one-time',
+      'Installment #':       '',
+      'Plan Label':          'Full Payment — ₹28,000',
+      'Amount Paid (₹)':     28000,
+      'Demo Date':           '2026-07-01',
+      'Time Slot':           '6:00 PM',
+      'Mode':                'Live Online',
+      'Razorpay Order ID':   'order_TEST123',
+      'Razorpay Payment ID': 'pay_TEST123',
+      'Payment Status':      'paid',
+      'Inst. 2 Due Date':    ''
+    });
+    res.json({ success: true, message: 'Check your Enrollments sheet tab!' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// TEST FULL ENROLLMENT FLOW — simulates a real payment without
+// going through Razorpay. Saves to Firestore + Sheets.
+// GET /api/test-enrollment
+// ─────────────────────────────────────────────────────────────
+app.get('/api/test-enrollment', async (req, res) => {
+  try {
+    const bookingId = genId('MPF');
+    const today     = new Date().toISOString().split('T')[0];
+
+    const record = {
+      bookingId,
+      razorpay_order_id:   'order_SIMULATED',
+      razorpay_payment_id: 'pay_SIMULATED',
+      name:              'Test Enrollment',
+      phone:             '9999999999',
+      email:             'test@mpulse.com',
+      status:            'Working Professional',
+      course:            'AI-Powered Digital Marketing Course',
+      message:           'Simulated enrollment test',
+      planType:          'one-time',
+      installmentNumber: '',
+      planLabel:         'Full Payment — ₹28,000',
+      amountPaid:        28000,
+      date:              today,
+      slot:              '6:00 PM',
+      mode:              'Live Online',
+      type:              'enrollment',
+      paymentStatus:     'paid'
+    };
+
+    console.log('TEST: saving to Firestore...');
+    await saveDoc('enrollments', bookingId, record);
+    console.log('TEST: Firestore done ✅');
+
+    console.log('TEST: sending to Sheets...');
+    await logToSheets('Enrollments', {
+      'Booking ID':          bookingId,
+      'Name':                record.name,
+      'Phone':               record.phone,
+      'Email':               record.email,
+      'Student Status':      record.status,
+      'Course':              record.course,
+      'Message':             record.message,
+      'Plan Type':           record.planType,
+      'Installment #':       record.installmentNumber,
+      'Plan Label':          record.planLabel,
+      'Amount Paid (₹)':     record.amountPaid,
+      'Demo Date':           record.date,
+      'Time Slot':           record.slot,
+      'Mode':                record.mode,
+      'Razorpay Order ID':   record.razorpay_order_id,
+      'Razorpay Payment ID': record.razorpay_payment_id,
+      'Payment Status':      record.paymentStatus,
+      'Inst. 2 Due Date':    ''
+    });
+    console.log('TEST: Sheets done ✅');
+
+    res.json({
+      success:   true,
+      bookingId,
+      message:   'Enrollment test complete — check Firestore + Sheets!'
+    });
+  } catch (err) {
+    console.error('TEST enrollment error:', err);
+    res.status(500).json({ success: false, error: err.message, stack: err.stack });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
 // VERIFY PAYMENT  (called after Razorpay checkout succeeds)
 // Saves full enrollment record to:
 //   • Firestore  → collection: "enrollments"
@@ -201,6 +317,13 @@ app.post('/api/verify-payment', async (req, res) => {
       enrollment, planType, installmentNumber
     } = req.body;
 
+    console.log('verify-payment received:', {
+      razorpay_order_id, razorpay_payment_id,
+      planType, installmentNumber,
+      enrollment_name: enrollment?.name,
+      enrollment_course: enrollment?.course
+    });
+
     if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature)
       return res.status(400).json({ error: 'Missing Razorpay payment fields.' });
 
@@ -210,8 +333,16 @@ app.post('/api/verify-payment', async (req, res) => {
       .update(`${razorpay_order_id}|${razorpay_payment_id}`)
       .digest('hex');
 
-    if (expected !== razorpay_signature)
+    console.log('Signature check:', {
+      expected: expected.slice(0, 20) + '...',
+      received: razorpay_signature.slice(0, 20) + '...',
+      match: expected === razorpay_signature
+    });
+
+    if (expected !== razorpay_signature) {
+      console.error('❌ Signature mismatch — check RAZORPAY_KEY_SECRET on Render');
       return res.status(400).json({ verified: false, error: 'Payment signature mismatch.' });
+    }
 
     const plan      = getPlan(planType, installmentNumber);
     const bookingId = genId('MPF');
@@ -249,9 +380,12 @@ app.post('/api/verify-payment', async (req, res) => {
     }
 
     // ── Save to Firestore ──
+    console.log('Saving to Firestore:', bookingId);
     await saveDoc('enrollments', bookingId, record);
+    console.log('✅ Firestore save done:', bookingId);
 
     // ── Log to Google Sheets ──
+    console.log('Sending to Google Sheets...');
     await logToSheets('Enrollments', {
       'Booking ID':           bookingId,
       'Name':                 record.name,
@@ -272,6 +406,8 @@ app.post('/api/verify-payment', async (req, res) => {
       'Payment Status':       record.paymentStatus,
       'Inst. 2 Due Date':     record.installment2DueDate || ''
     });
+
+    console.log('✅ Sheets log done');
 
     // ── Email notification ──
     sendEmail(
@@ -297,9 +433,10 @@ app.post('/api/verify-payment', async (req, res) => {
       </div>`
     );
 
+    console.log('✅ Email sent');
     res.json({ verified: true, bookingId, amountPaid: record.amountPaid, planLabel: record.planLabel });
   } catch (err) {
-    console.error('verify-payment error:', err);
+    console.error('❌ verify-payment FULL ERROR:', err);
     res.status(500).json({ error: 'Payment verification failed due to a server error.' });
   }
 });
