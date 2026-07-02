@@ -7,55 +7,104 @@ const admin      = require('firebase-admin');
 const nodemailer = require('nodemailer');
 const rateLimit  = require('express-rate-limit');
 const fetch      = require('node-fetch');
+const { connectDB, models, getIsConnected } = require('./db');
+const { RtcTokenBuilder, RtcRole } = require('agora-token');
+
 
 const app  = express();
+connectDB();
 const PORT = process.env.PORT || 5000;
 app.set('trust proxy', 1);
 
 // ─────────────────────────────────────────────────────────────
 // MIDDLEWARE
 // ─────────────────────────────────────────────────────────────
-const allowedOrigins = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000')
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000,http://localhost:5501,http://127.0.0.1:5501,http://localhost:8888,http://localhost:5000,http://127.0.0.1:5000')
   .split(',').map(o => o.trim());
 
 app.use(cors({
   origin(origin, cb) {
-    if (!origin || allowedOrigins.includes(origin) || allowedOrigins.includes('*'))
+    if (
+      !origin ||
+      allowedOrigins.includes(origin) ||
+      allowedOrigins.includes('*') ||
+      origin.includes('localhost') ||
+      origin.includes('127.0.0.1') ||
+      origin.startsWith('http://172.') ||
+      origin.startsWith('http://192.168.') ||
+      origin.startsWith('http://10.') ||
+      origin.startsWith('capacitor://') ||
+      origin.startsWith('ionic://')
+    ) {
       cb(null, true);
-    else
+    } else {
       cb(new Error('Not allowed by CORS'));
+    }
   }
 }));
 app.use(express.json());
+const path = require('path');
+app.use(express.static(path.join(__dirname, '../forntend')));
 app.use('/api/', rateLimit({ windowMs: 15 * 60 * 1000, max: 60, message: { error: 'Too many requests. Try again later.' } }));
 
 // ─────────────────────────────────────────────────────────────
 // FIREBASE
 // ─────────────────────────────────────────────────────────────
-const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT_JSON
-  ? JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON)
-  : require('./serviceAccountKey.json');
+let db;
+try {
+  const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT_JSON
+    ? JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON)
+    : require('./serviceAccountKey.json');
 
-admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
-const db = admin.firestore();
+  admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+  db = admin.firestore();
+  console.log("✅ Firebase initialized successfully");
+} catch (e) {
+  console.error("⚠️ Firebase could not be initialized:", e.message);
+  console.warn("⚠️ Firebase features (saving registrations) will be mocked!");
+}
 
 // ─────────────────────────────────────────────────────────────
 // RAZORPAY
 // ─────────────────────────────────────────────────────────────
-const razorpay = new Razorpay({
-  key_id:     process.env.RAZORPAY_KEY_ID,
-  key_secret: process.env.RAZORPAY_KEY_SECRET
-});
+let razorpay;
+try {
+  if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
+    throw new Error('Key ID and Secret must be provided in env variables');
+  }
+  razorpay = new Razorpay({
+    key_id:     process.env.RAZORPAY_KEY_ID,
+    key_secret: process.env.RAZORPAY_KEY_SECRET
+  });
+  console.log("✅ Razorpay initialized successfully");
+} catch (e) {
+  console.error("⚠️ Razorpay could not be initialized:", e.message);
+  console.warn("⚠️ Payment order creation will fail!");
+}
 
 // ─────────────────────────────────────────────────────────────
 // EMAIL  (Gmail — mpulsedigitalai@gmail.com)
 // ─────────────────────────────────────────────────────────────
-const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
-});
+let transporter;
+try {
+  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+    throw new Error('Email user and pass must be provided in env variables');
+  }
+  transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
+  });
+  console.log("✅ Nodemailer initialized successfully");
+} catch (e) {
+  console.error("⚠️ Nodemailer could not be initialized:", e.message);
+  console.warn("⚠️ Email notifications will be skipped!");
+}
 
 function sendEmail(subject, html) {
+  if (!transporter) {
+    console.log(`[Mock Email Sent] Subject: ${subject}`);
+    return;
+  }
   transporter.sendMail({
     from: `"MPULSE DIGITAL AI" <${process.env.EMAIL_USER}>`,
     to:   process.env.NOTIFY_EMAIL || 'mpulsedigitalai@gmail.com',
@@ -89,12 +138,50 @@ async function logToSheets(formType, payload) {
 // FIRESTORE HELPER
 // ─────────────────────────────────────────────────────────────
 async function saveDoc(collection, docId, data) {
+  // ── SAVE TO MONGODB ──
   try {
-    await db.collection(collection).doc(docId).set({
-      ...data,
-      createdAt: admin.firestore.FieldValue.serverTimestamp()
-    });
-  } catch (err) { console.error(`Firestore save error (${collection}):`, err.message); }
+    if (getIsConnected()) {
+      let model;
+      if (collection === 'enrollments') model = models.Enrollment;
+      else if (collection === 'callbacks') model = models.Callback;
+      else if (collection === 'enquiries') model = models.Enquiry;
+      else if (collection === 'signups') model = models.Signup;
+      else if (collection === 'demo_bookings') model = models.DemoBooking;
+
+      if (model) {
+        const recordData = { ...data };
+        if (collection === 'enrollments' || collection === 'demo_bookings') {
+          recordData.bookingId = docId;
+        }
+        
+        if (collection === 'enrollments' || collection === 'demo_bookings') {
+          await model.findOneAndUpdate({ bookingId: docId }, recordData, { upsert: true, new: true });
+        } else {
+          await model.create(recordData);
+        }
+        console.log(`✅ Saved to MongoDB [${collection}]: ${docId || ''}`);
+      }
+    } else {
+      console.warn(`⚠️ MongoDB not connected — skipping MongoDB save for [${collection}]`);
+    }
+  } catch (err) {
+    console.error(`❌ MongoDB save error (${collection}):`, err.message);
+  }
+
+  // ── SAVE TO FIREBASE ──
+  try {
+    if (db) {
+      await db.collection(collection).doc(docId).set({
+        ...data,
+        createdAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+      console.log(`✅ Saved to Firestore [${collection}]: ${docId}`);
+    } else {
+      console.log(`[Mock Firestore Save] ${collection}/${docId}:`, JSON.stringify(data, null, 2));
+    }
+  } catch (err) {
+    console.error(`❌ Firestore save error (${collection}):`, err.message);
+  }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -166,6 +253,10 @@ app.post('/api/create-order', async (req, res) => {
 
     const plan = getPlan(planType, installmentNumber);
     if (!plan) return res.status(400).json({ error: 'Invalid payment plan.' });
+
+    if (!razorpay) {
+      return res.status(500).json({ error: 'Razorpay is not initialized on the server. Please check environment variables.' });
+    }
 
     const order = await razorpay.orders.create({
       amount:   plan.amount * 100,   // paise
@@ -622,6 +713,10 @@ app.get('/api/overdue-students', async (req, res) => {
     if (req.query.adminKey !== process.env.ADMIN_KEY)
       return res.status(403).json({ error: 'Unauthorized.' });
 
+    if (!db) {
+      return res.status(500).json({ error: 'Firestore is not initialized.' });
+    }
+
     const today    = new Date().toISOString().split('T')[0];
     const snapshot = await db.collection('enrollments')
       .where('planType', '==', 'installments')
@@ -666,6 +761,10 @@ app.post('/api/mark-installment-paid', async (req, res) => {
     if (!bookingId)
       return res.status(400).json({ error: 'bookingId is required.' });
 
+    if (!db) {
+      return res.status(500).json({ error: 'Firestore is not initialized.' });
+    }
+
     await db.collection('enrollments').doc(bookingId).update({
       installment2Paid: true,
       paymentStatus:    'fully_paid'
@@ -675,6 +774,436 @@ app.post('/api/mark-installment-paid', async (req, res) => {
   } catch (err) {
     console.error('mark-installment-paid error:', err);
     res.status(500).json({ error: 'Could not update installment status.' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// ADMIN — GET ALL DATA FOR DASHBOARD
+// GET /api/admin/all-data?adminKey=YOUR_KEY
+// ─────────────────────────────────────────────────────────────
+app.get('/api/admin/all-data', async (req, res) => {
+  try {
+    const { adminKey } = req.query;
+    if (!adminKey || adminKey !== process.env.ADMIN_KEY) {
+      return res.status(403).json({ error: 'Unauthorized. Invalid adminKey.' });
+    }
+
+    let enrollments = [];
+    let callbacks = [];
+    let enquiries = [];
+    let signups = [];
+    let demoBookings = [];
+
+    if (getIsConnected()) {
+      enrollments = await models.Enrollment.find({}).sort({ createdAt: -1 });
+      callbacks = await models.Callback.find({}).sort({ createdAt: -1 });
+      enquiries = await models.Enquiry.find({}).sort({ createdAt: -1 });
+      signups = await models.Signup.find({}).sort({ createdAt: -1 });
+      demoBookings = await models.DemoBooking.find({}).sort({ createdAt: -1 });
+    } else if (db) {
+      const snapEnr = await db.collection('enrollments').get();
+      const snapCb = await db.collection('callbacks').get();
+      const snapEnq = await db.collection('enquiries').get();
+      const snapSu = await db.collection('signups').get();
+      const snapDb = await db.collection('demo_bookings').get();
+
+      snapEnr.forEach(doc => enrollments.push(doc.data()));
+      snapCb.forEach(doc => callbacks.push(doc.data()));
+      snapEnq.forEach(doc => enquiries.push(doc.data()));
+      snapSu.forEach(doc => signups.push(doc.data()));
+      snapDb.forEach(doc => demoBookings.push(doc.data()));
+    } else {
+      return res.status(503).json({ error: 'No database connection available.' });
+    }
+
+    res.json({ enrollments, callbacks, enquiries, signups, demoBookings });
+  } catch (err) {
+    console.error('admin all-data error:', err);
+    res.status(500).json({ error: 'Failed to retrieve admin data.' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// ADMIN — UPDATE CALLBACK STATUS
+// POST /api/admin/update-callback-status
+// Body: { adminKey, callbackId, status }
+// ─────────────────────────────────────────────────────────────
+app.post('/api/admin/update-callback-status', async (req, res) => {
+  try {
+    const { adminKey, callbackId, status } = req.body;
+    if (!adminKey || adminKey !== process.env.ADMIN_KEY) {
+      return res.status(403).json({ error: 'Unauthorized. Invalid adminKey.' });
+    }
+    if (!callbackId || !status) {
+      return res.status(400).json({ error: 'callbackId and status are required.' });
+    }
+
+    if (getIsConnected()) {
+      await models.Callback.findByIdAndUpdate(callbackId, { status });
+      res.json({ success: true, message: 'Callback status updated in MongoDB.' });
+    } else if (db) {
+      await db.collection('callbacks').doc(callbackId).update({ status });
+      res.json({ success: true, message: 'Callback status updated in Firestore.' });
+    } else {
+      res.status(503).json({ error: 'No database connection available.' });
+    }
+  } catch (err) {
+    console.error('update-callback-status error:', err);
+    res.status(500).json({ error: 'Failed to update callback status.' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// ADMIN — DELETE ITEM
+// POST /api/admin/delete-item
+// Body: { adminKey, type, id }
+// ─────────────────────────────────────────────────────────────
+app.post('/api/admin/delete-item', async (req, res) => {
+  try {
+    const { adminKey, type, id } = req.body;
+    if (!adminKey || adminKey !== process.env.ADMIN_KEY) {
+      return res.status(403).json({ error: 'Unauthorized. Invalid adminKey.' });
+    }
+    if (!type || !id) {
+      return res.status(400).json({ error: 'type and id are required.' });
+    }
+
+    let deleted = false;
+
+    if (getIsConnected()) {
+      const modelMap = {
+        enrollments: models.Enrollment,
+        callbacks: models.Callback,
+        demos: models.DemoBooking,
+        enquiries: models.Enquiry,
+        signups: models.Signup
+      };
+      const Model = modelMap[type];
+      if (Model) {
+        await Model.findByIdAndDelete(id);
+        deleted = true;
+      }
+    } else if (db) {
+      const collectionMap = {
+        enrollments: 'enrollments',
+        callbacks: 'callbacks',
+        demos: 'demoBookings',
+        enquiries: 'enquiries',
+        signups: 'signups'
+      };
+      const col = collectionMap[type];
+      if (col) {
+        await db.collection(col).doc(id).delete();
+        deleted = true;
+      }
+    }
+
+    if (deleted) {
+      res.json({ success: true, message: 'Item deleted successfully.' });
+    } else {
+      res.status(400).json({ error: 'Invalid item type or database connection unavailable.' });
+    }
+  } catch (err) {
+    console.error('delete-item error:', err);
+    res.status(500).json({ error: 'Failed to delete item.' });
+  }
+});
+
+
+// ─────────────────────────────────────────────────────────────
+// LMS & MEMBERSHIP SYSTEM API
+// ─────────────────────────────────────────────────────────────
+
+// 1. Student Signup
+app.post('/api/auth/signup', async (req, res) => {
+  try {
+    const { name, email, phone, password } = req.body;
+    if (!name || !email || !phone || !password) {
+      return res.status(400).json({ error: 'All fields are required.' });
+    }
+
+    if (!getIsConnected()) {
+      return res.status(503).json({ error: 'Database connection unavailable.' });
+    }
+
+    // Check if user already exists
+    const existing = await models.Student.findOne({ email });
+    if (existing) {
+      return res.status(400).json({ error: 'Account already exists with this email.' });
+    }
+
+    // Check if email has active paid enrollment
+    const enrollment = await models.Enrollment.findOne({
+      email,
+      paymentStatus: { $in: ['paid', 'installment_1_paid', 'fully_paid'] }
+    });
+    const isPaid = !!enrollment;
+
+    const newStudent = new models.Student({
+      name,
+      email,
+      phone,
+      password, // Simple text storage for ease of use in demo/dev
+      isPaid
+    });
+
+    await newStudent.save();
+    res.json({ success: true, user: { name, email, phone, isPaid } });
+  } catch (err) {
+    console.error('auth signup error:', err);
+    res.status(500).json({ error: 'Failed to create account.' });
+  }
+});
+
+// 2. Student Login
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password are required.' });
+    }
+
+    if (!getIsConnected()) {
+      return res.status(503).json({ error: 'Database connection unavailable.' });
+    }
+
+    const student = await models.Student.findOne({ email, password });
+    if (!student) {
+      return res.status(401).json({ error: 'Invalid email or password.' });
+    }
+
+    // Refresh membership paid status dynamically if they enrolled recently
+    const enrollment = await models.Enrollment.findOne({
+      email,
+      paymentStatus: { $in: ['paid', 'installment_1_paid', 'fully_paid'] }
+    });
+    if (enrollment && !student.isPaid) {
+      student.isPaid = true;
+      await student.save();
+    }
+
+    res.json({
+      success: true,
+      user: {
+        name: student.name,
+        email: student.email,
+        phone: student.phone,
+        isPaid: student.isPaid
+      }
+    });
+  } catch (err) {
+    console.error('auth login error:', err);
+    res.status(500).json({ error: 'Authentication failed.' });
+  }
+});
+
+// 3. Student Portal Data Loader (Live classes, recordings, resources)
+app.get('/api/student/portal-data', async (req, res) => {
+  try {
+    const { email } = req.query;
+    if (!email) {
+      return res.status(400).json({ error: 'email query parameter is required.' });
+    }
+
+    if (!getIsConnected()) {
+      return res.status(503).json({ error: 'Database connection unavailable.' });
+    }
+
+    const student = await models.Student.findOne({ email });
+    if (!student) {
+      return res.status(404).json({ error: 'Student not found.' });
+    }
+
+    // Dynamic paid-status check
+    const enrollment = await models.Enrollment.findOne({
+      email,
+      paymentStatus: { $in: ['paid', 'installment_1_paid', 'fully_paid'] }
+    });
+    if (enrollment && !student.isPaid) {
+      student.isPaid = true;
+      await student.save();
+    }
+
+    const liveClasses = await models.LiveClass.find({}).sort({ date: 1, time: 1 });
+    const recordingsRaw = await models.Recording.find({}).sort({ createdAt: -1 });
+    const resourcesRaw = await models.Resource.find({}).sort({ createdAt: -1 });
+
+    // Lock content if user is unpaid
+    const recordings = student.isPaid
+      ? recordingsRaw
+      : recordingsRaw.map(r => ({ _id: r._id, title: r.title, videoUrl: 'LOCKED' }));
+
+    const resources = student.isPaid
+      ? resourcesRaw
+      : resourcesRaw.map(r => ({ _id: r._id, title: r.title, fileUrl: 'LOCKED', type: r.type }));
+
+    res.json({
+      isPaid: student.isPaid,
+      liveClasses,
+      recordings,
+      resources
+    });
+  } catch (err) {
+    console.error('portal-data error:', err);
+    res.status(500).json({ error: 'Failed to retrieve classroom materials.' });
+  }
+});
+
+// 4. Admin LMS - Schedule Class
+app.post('/api/admin/schedule-class', async (req, res) => {
+  try {
+    const { adminKey, title, date, time, channelName } = req.body;
+    if (!adminKey || adminKey !== process.env.ADMIN_KEY) {
+      return res.status(403).json({ error: 'Unauthorized.' });
+    }
+    if (!title || !date || !time || !channelName) {
+      return res.status(400).json({ error: 'All fields are required.' });
+    }
+
+    if (!getIsConnected()) {
+      return res.status(503).json({ error: 'Database connection unavailable.' });
+    }
+
+    const newClass = new models.LiveClass({ title, date, time, channelName });
+    await newClass.save();
+    res.json({ success: true, message: 'Live class scheduled successfully.' });
+  } catch (err) {
+    console.error('schedule-class error:', err);
+    res.status(500).json({ error: 'Failed to schedule live class.' });
+  }
+});
+
+// 5. Admin LMS - Upload Recording
+app.post('/api/admin/upload-recording', async (req, res) => {
+  try {
+    const { adminKey, title, videoUrl } = req.body;
+    if (!adminKey || adminKey !== process.env.ADMIN_KEY) {
+      return res.status(403).json({ error: 'Unauthorized.' });
+    }
+    if (!title || !videoUrl) {
+      return res.status(400).json({ error: 'All fields are required.' });
+    }
+
+    if (!getIsConnected()) {
+      return res.status(503).json({ error: 'Database connection unavailable.' });
+    }
+
+    const newRec = new models.Recording({ title, videoUrl });
+    await newRec.save();
+    res.json({ success: true, message: 'Class recording saved.' });
+  } catch (err) {
+    console.error('upload-recording error:', err);
+    res.status(500).json({ error: 'Failed to upload recording.' });
+  }
+});
+
+// 6. Admin LMS - Upload Study Resource
+app.post('/api/admin/upload-resource', async (req, res) => {
+  try {
+    const { adminKey, title, fileUrl, type } = req.body;
+    if (!adminKey || adminKey !== process.env.ADMIN_KEY) {
+      return res.status(403).json({ error: 'Unauthorized.' });
+    }
+    if (!title || !fileUrl) {
+      return res.status(400).json({ error: 'All fields are required.' });
+    }
+
+    if (!getIsConnected()) {
+      return res.status(503).json({ error: 'Database connection unavailable.' });
+    }
+
+    const newRes = new models.Resource({ title, fileUrl, type });
+    await newRes.save();
+    res.json({ success: true, message: 'Study materials posted.' });
+  } catch (err) {
+    console.error('upload-resource error:', err);
+    res.status(500).json({ error: 'Failed to upload study resources.' });
+  }
+});
+
+// 7. Admin LMS - Toggle user paid state manually
+app.post('/api/admin/toggle-user-paid', async (req, res) => {
+  try {
+    const { adminKey, email, isPaid } = req.body;
+    if (!adminKey || adminKey !== process.env.ADMIN_KEY) {
+      return res.status(403).json({ error: 'Unauthorized.' });
+    }
+
+    if (!getIsConnected()) {
+      return res.status(503).json({ error: 'Database connection unavailable.' });
+    }
+
+    await models.Student.findOneAndUpdate({ email }, { isPaid });
+    res.json({ success: true, message: `Membership status updated for ${email}` });
+  } catch (err) {
+    console.error('toggle-user-paid error:', err);
+    res.status(500).json({ error: 'Failed to update student membership.' });
+  }
+});
+
+// 8. Admin LMS - Get list of students for LMS panel
+app.get('/api/admin/lms-students', async (req, res) => {
+  try {
+    const { adminKey } = req.query;
+    if (!adminKey || adminKey !== process.env.ADMIN_KEY) {
+      return res.status(403).json({ error: 'Unauthorized.' });
+    }
+
+    if (!getIsConnected()) {
+      return res.status(503).json({ error: 'Database connection unavailable.' });
+    }
+
+    const students = await models.Student.find({}).sort({ createdAt: -1 });
+    res.json({ students });
+  } catch (err) {
+    console.error('lms-students error:', err);
+    res.status(500).json({ error: 'Failed to fetch student accounts.' });
+  }
+});
+
+
+
+// ─────────────────────────────────────────────────────────────
+// AGORA TOKEN GENERATOR
+// GET /api/agora-token?channelName=ROOM_ID&role=publisher/subscriber
+// ─────────────────────────────────────────────────────────────
+app.get('/api/agora-token', (req, res) => {
+  try {
+    const appId = process.env.AGORA_APP_ID;
+    const appCertificate = process.env.AGORA_APP_CERTIFICATE;
+
+    if (!appId || !appCertificate) {
+      return res.status(500).json({ error: 'Agora credentials are not set on the server.' });
+    }
+
+    const channelName = req.query.channelName;
+    if (!channelName) {
+      return res.status(400).json({ error: 'channelName is required.' });
+    }
+
+    let role = RtcRole.SUBSCRIBER;
+    if (req.query.role === 'publisher') {
+      role = RtcRole.PUBLISHER;
+    }
+
+    const uid = parseInt(req.query.uid, 10) || 0;
+    const expirationTimeInSeconds = 7200; // 2 hours
+    const currentTimestamp = Math.floor(Date.now() / 1000);
+    const privilegeExpiredTs = currentTimestamp + expirationTimeInSeconds;
+
+    const token = RtcTokenBuilder.buildTokenWithUid(
+      appId,
+      appCertificate,
+      channelName,
+      uid,
+      role,
+      privilegeExpiredTs
+    );
+
+    res.json({ token, appId });
+  } catch (err) {
+    console.error('agora-token generation error:', err);
+    res.status(500).json({ error: 'Failed to generate Agora token.' });
   }
 });
 
