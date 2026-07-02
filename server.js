@@ -293,6 +293,23 @@ app.get('/api/test-env', (req, res) => {
   });
 });
 
+app.get('/api/test-email-trigger', async (req, res) => {
+  if (!transporter) {
+    return res.status(500).json({ error: 'Nodemailer is not initialized' });
+  }
+  try {
+    const info = await transporter.sendMail({
+      from: `"MPULSE DIGITAL AI" <${process.env.EMAIL_USER}>`,
+      to:   process.env.NOTIFY_EMAIL || 'mpulsedigitalai@gmail.com',
+      subject: 'Render SMTP Test Route',
+      text: 'SMTP test successful!'
+    });
+    res.json({ success: true, message: 'Email sent successfully!', messageId: info.messageId });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ─────────────────────────────────────────────────────────────
 // TEST SHEETS — fires a test row directly to Enrollments tab
 // GET /api/test-sheets
