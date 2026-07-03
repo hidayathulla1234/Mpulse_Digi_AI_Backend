@@ -143,6 +143,17 @@ const resourceSchema = new mongoose.Schema({
 });
 const Resource = mongoose.models.Resource || mongoose.model('Resource', resourceSchema);
 
+// 10. ClassroomName Model
+const classroomNameSchema = new mongoose.Schema({
+  channelName: { type: String, required: true },
+  uid: { type: Number, required: true },
+  name: { type: String, required: true },
+  role: { type: String, default: 'student' },
+  updatedAt: { type: Date, default: Date.now }
+});
+classroomNameSchema.index({ channelName: 1, uid: 1 }, { unique: true });
+const ClassroomName = mongoose.models.ClassroomName || mongoose.model('ClassroomName', classroomNameSchema);
+
 // Exporting connection function and models
 module.exports = {
   connectDB,
@@ -155,7 +166,8 @@ module.exports = {
     Student,
     LiveClass,
     Recording,
-    Resource
+    Resource,
+    ClassroomName
   },
   getIsConnected: () => isConnected
 };

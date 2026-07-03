@@ -1306,6 +1306,52 @@ Keep your answers brief, structured with bullet points, and highly engaging!`;
 });
 
 // ─────────────────────────────────────────────────────────────
+// CLASSROOM PARTICIPANT MAPPINGS
+// ─────────────────────────────────────────────────────────────
+app.post('/api/classroom/register-name', async (req, res) => {
+  try {
+    const { channelName, uid, name, role } = req.body;
+    if (!channelName || !uid || !name) {
+      return res.status(400).json({ error: 'channelName, uid, and name are required.' });
+    }
+    
+    if (getIsConnected() && models.ClassroomName) {
+      await models.ClassroomName.findOneAndUpdate(
+        { channelName, uid: parseInt(uid, 10) },
+        { name, role: role || 'student', updatedAt: new Date() },
+        { upsert: true, new: true }
+      );
+    }
+    res.json({ success: true });
+  } catch (err) {
+    console.error('register-name error:', err);
+    res.status(500).json({ error: 'Failed to register name.' });
+  }
+});
+
+app.get('/api/classroom/names', async (req, res) => {
+  try {
+    const { channelName } = req.query;
+    if (!channelName) {
+      return res.status(400).json({ error: 'channelName is required.' });
+    }
+    
+    let mappings = [];
+    if (getIsConnected() && models.ClassroomName) {
+      const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+      mappings = await models.ClassroomName.find({
+        channelName,
+        updatedAt: { $gte: twoHoursAgo }
+      });
+    }
+    res.json({ mappings });
+  } catch (err) {
+    console.error('get-names error:', err);
+    res.status(500).json({ error: 'Failed to retrieve names.' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
 // START
 // ─────────────────────────────────────────────────────────────
 app.listen(PORT, () => console.log(`✅  MPULSE backend running on port ${PORT}`));
