@@ -1225,6 +1225,87 @@ app.get('/api/agora-token', (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────
+// AI CHATBOT ROUTE
+// POST /api/chat
+// Body: { message, history }
+// ─────────────────────────────────────────────────────────────
+app.post('/api/chat', async (req, res) => {
+  try {
+    const { message, history } = req.body;
+    if (!message) {
+      return res.status(400).json({ error: 'message is required.' });
+    }
+
+    const geminiKey = process.env.GEMINI_API_KEY;
+    if (!geminiKey) {
+      return res.json({
+        reply: "Hi! I am Mpu, your AI assistant. It looks like my Google Gemini API Key is not configured yet on Render. However, I can tell you that MPULSE DIGITAL AI offers premium courses in Generative AI, Digital Marketing, and Machine Learning! How can I help you contact our mentors today?"
+      });
+    }
+
+    const systemInstruction = `You are Mpu, the friendly AI assistant for MPULSE DIGITAL AI, an institute specializing in AI-powered digital marketing, Machine Learning, Generative AI, and data science courses.
+Key details to answer users:
+- Location: Local classroom classes & Live Online classes.
+- Courses:
+  1. Generative AI & Prompt Engineering (6 weeks)
+  2. AI Tools & Productivity Mastery (4 weeks)
+  3. AI Agents & Automation Building (8 weeks)
+  4. Machine Learning Engineering (6 months)
+  5. Deep Learning with TensorFlow (5 months)
+  6. Computer Vision & NLP (4 months)
+  7. Python for Data & AI (4 months)
+  8. Data Science & Analytics (6 months)
+  9. MLOps & AI Deployment (5 months)
+  10. LLMs & RAG Systems (4 months)
+  11. AI Job Readiness Bootcamp (6 months)
+- Pricing:
+  - One-time: ₹28,000 (saves ₹2,000)
+  - Installment 1: ₹15,000 (due at enrollment)
+  - Installment 2: ₹15,000 (due 1 month after enrollment)
+  - Total: ₹30,000
+- Call to Action: Strongly encourage them to click the 'Book Free Demo Class' or 'Request Callback' button to speak with a human mentor!
+Keep your answers brief, structured with bullet points, and highly engaging!`;
+
+    const contents = [];
+    if (history && Array.isArray(history)) {
+      history.forEach(item => {
+        contents.push({
+          role: item.role === 'user' ? 'user' : 'model',
+          parts: [{ text: item.text }]
+        });
+      });
+    }
+    contents.push({ role: 'user', parts: [{ text: message }] });
+
+    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`;
+
+    const apiResponse = await fetch(geminiUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents,
+        systemInstruction: { parts: [{ text: systemInstruction }] },
+        generationConfig: { maxOutputTokens: 350, temperature: 0.7 }
+      })
+    });
+
+    if (!apiResponse.ok) {
+      const errorText = await apiResponse.text();
+      console.error('Gemini API Error details:', errorText);
+      throw new Error(`Gemini API returned status ${apiResponse.status}`);
+    }
+
+    const responseData = await apiResponse.json();
+    const reply = responseData.candidates?.[0]?.content?.parts?.[0]?.text || "I couldn't process that. Please try again!";
+    
+    res.json({ reply });
+  } catch (err) {
+    console.error('chatbot error:', err);
+    res.status(500).json({ error: 'Failed to process chat query.' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
 // START
 // ─────────────────────────────────────────────────────────────
 app.listen(PORT, () => console.log(`✅  MPULSE backend running on port ${PORT}`));
