@@ -149,6 +149,7 @@ const classroomNameSchema = new mongoose.Schema({
   uid: { type: Number, required: true },
   name: { type: String, required: true },
   role: { type: String, default: 'student' },
+  handRaised: { type: Boolean, default: false },
   updatedAt: { type: Date, default: Date.now }
 });
 classroomNameSchema.index({ channelName: 1, uid: 1 }, { unique: true });

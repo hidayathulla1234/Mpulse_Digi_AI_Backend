@@ -1310,15 +1310,19 @@ Keep your answers brief, structured with bullet points, and highly engaging!`;
 // ─────────────────────────────────────────────────────────────
 app.post('/api/classroom/register-name', async (req, res) => {
   try {
-    const { channelName, uid, name, role } = req.body;
+    const { channelName, uid, name, role, handRaised } = req.body;
     if (!channelName || !uid || !name) {
       return res.status(400).json({ error: 'channelName, uid, and name are required.' });
     }
     
     if (getIsConnected() && models.ClassroomName) {
+      const updateFields = { name, role: role || 'student', updatedAt: new Date() };
+      if (handRaised !== undefined) {
+        updateFields.handRaised = handRaised;
+      }
       await models.ClassroomName.findOneAndUpdate(
         { channelName, uid: parseInt(uid, 10) },
-        { name, role: role || 'student', updatedAt: new Date() },
+        updateFields,
         { upsert: true, new: true }
       );
     }
