@@ -1,17 +1,17 @@
 require('dotenv').config();
-const express    = require('express');
-const cors       = require('cors');
-const Razorpay   = require('razorpay');
-const crypto     = require('crypto');
-const admin      = require('firebase-admin');
+const express = require('express');
+const cors = require('cors');
+const Razorpay = require('razorpay');
+const crypto = require('crypto');
+const admin = require('firebase-admin');
 const nodemailer = require('nodemailer');
-const rateLimit  = require('express-rate-limit');
-const fetch      = require('node-fetch');
+const rateLimit = require('express-rate-limit');
+const fetch = require('node-fetch');
 const { connectDB, models, getIsConnected } = require('./db');
 const { RtcTokenBuilder, RtcRole } = require('agora-token');
 
 
-const app  = express();
+const app = express();
 connectDB();
 const PORT = process.env.PORT || 5000;
 app.set('trust proxy', 1);
@@ -73,7 +73,7 @@ try {
     throw new Error('Key ID and Secret must be provided in env variables');
   }
   razorpay = new Razorpay({
-    key_id:     process.env.RAZORPAY_KEY_ID,
+    key_id: process.env.RAZORPAY_KEY_ID,
     key_secret: process.env.RAZORPAY_KEY_SECRET
   });
   console.log("✅ Razorpay initialized successfully");
@@ -107,7 +107,7 @@ function sendEmail(subject, html) {
   }
   transporter.sendMail({
     from: `"MPULSE DIGITAL AI" <${process.env.EMAIL_USER}>`,
-    to:   process.env.NOTIFY_EMAIL || 'mpulsedigitalai@gmail.com',
+    to: process.env.NOTIFY_EMAIL || 'mpulsedigitalai@gmail.com',
     subject, html
   }).catch(err => console.error('Email error:', err.message));
 }
@@ -123,7 +123,7 @@ async function logToSheets(formType, payload) {
   if (!url) { console.warn('GOOGLE_SHEETS_WEBHOOK_URL not set — skipping Sheets log'); return; }
   try {
     const res = await fetch(url, {
-      method:  'POST',
+      method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       // Apps Script requires redirect follow for POST → GET quirk
       redirect: 'follow',
@@ -153,7 +153,7 @@ async function saveDoc(collection, docId, data) {
         if (collection === 'enrollments' || collection === 'demo_bookings') {
           recordData.bookingId = docId;
         }
-        
+
         if (collection === 'enrollments' || collection === 'demo_bookings') {
           await model.findOneAndUpdate({ bookingId: docId }, recordData, { upsert: true, new: true });
         } else {
@@ -192,9 +192,9 @@ async function saveDoc(collection, docId, data) {
 //  Installment 2: ₹15,000  (due 1 month after enrollment)
 //  Total via EMI: ₹30,000
 // ─────────────────────────────────────────────────────────────
-const PRICE_ONE_TIME    = 28000;
+const PRICE_ONE_TIME = 28000;
 const PRICE_INSTALLMENT = 15000;   // each of 2 installments
-const PRICE_FULL        = 30000;   // total if paying by EMI
+const PRICE_FULL = 30000;   // total if paying by EMI
 
 function getPlan(planType, installmentNumber) {
   if (planType === 'one-time') {
@@ -228,7 +228,7 @@ app.get('/', (_, res) => res.json({ status: 'ok', service: 'MPULSE DIGITAL AI ba
 // ─────────────────────────────────────────────────────────────
 app.get('/api/payment-plans', (_, res) => {
   res.json({
-    oneTime:      { amount: PRICE_ONE_TIME,    label: 'Pay in Full — ₹28,000 (save ₹2,000)' },
+    oneTime: { amount: PRICE_ONE_TIME, label: 'Pay in Full — ₹28,000 (save ₹2,000)' },
     installments: {
       totalAmount: PRICE_FULL,
       schedule: [
@@ -259,17 +259,17 @@ app.post('/api/create-order', async (req, res) => {
     }
 
     const order = await razorpay.orders.create({
-      amount:   plan.amount * 100,   // paise
+      amount: plan.amount * 100,   // paise
       currency: 'INR',
-      receipt:  'rcpt_' + Date.now(),
-      notes:    { courseName, studentName, studentPhone, planType, installmentNumber: installmentNumber || '' }
+      receipt: 'rcpt_' + Date.now(),
+      notes: { courseName, studentName, studentPhone, planType, installmentNumber: installmentNumber || '' }
     });
 
     res.json({
-      orderId:   order.id,
-      amount:    order.amount,
-      currency:  order.currency,
-      keyId:     process.env.RAZORPAY_KEY_ID,
+      orderId: order.id,
+      amount: order.amount,
+      currency: order.currency,
+      keyId: process.env.RAZORPAY_KEY_ID,
       planLabel: plan.label
     });
   } catch (err) {
@@ -284,12 +284,12 @@ app.post('/api/create-order', async (req, res) => {
 // ─────────────────────────────────────────────────────────────
 app.get('/api/test-env', (req, res) => {
   res.json({
-    razorpay_key_id_set:  !!process.env.RAZORPAY_KEY_ID,
-    razorpay_secret_set:  !!process.env.RAZORPAY_KEY_SECRET,
-    firebase_set:         !!process.env.FIREBASE_SERVICE_ACCOUNT_JSON,
-    sheets_webhook_set:   !!process.env.GOOGLE_SHEETS_WEBHOOK_URL,
-    email_user_set:       !!process.env.EMAIL_USER,
-    sheets_url_preview:   (process.env.GOOGLE_SHEETS_WEBHOOK_URL || '').slice(0, 60) + '...'
+    razorpay_key_id_set: !!process.env.RAZORPAY_KEY_ID,
+    razorpay_secret_set: !!process.env.RAZORPAY_KEY_SECRET,
+    firebase_set: !!process.env.FIREBASE_SERVICE_ACCOUNT_JSON,
+    sheets_webhook_set: !!process.env.GOOGLE_SHEETS_WEBHOOK_URL,
+    email_user_set: !!process.env.EMAIL_USER,
+    sheets_url_preview: (process.env.GOOGLE_SHEETS_WEBHOOK_URL || '').slice(0, 60) + '...'
   });
 });
 
@@ -300,7 +300,7 @@ app.get('/api/test-email-trigger', async (req, res) => {
   try {
     const info = await transporter.sendMail({
       from: `"MPULSE DIGITAL AI" <${process.env.EMAIL_USER}>`,
-      to:   process.env.NOTIFY_EMAIL || 'mpulsedigitalai@gmail.com',
+      to: process.env.NOTIFY_EMAIL || 'mpulsedigitalai@gmail.com',
       subject: 'Render SMTP Test Route',
       text: 'SMTP test successful!'
     });
@@ -317,24 +317,24 @@ app.get('/api/test-email-trigger', async (req, res) => {
 app.get('/api/test-sheets', async (req, res) => {
   try {
     await logToSheets('Enrollments', {
-      'Booking ID':          'TEST-001',
-      'Name':                'Test Student',
-      'Phone':               '9999999999',
-      'Email':               'test@test.com',
-      'Student Status':      'Working Professional',
-      'Course':              'AI-Powered Digital Marketing Course',
-      'Message':             'Test row from /api/test-sheets',
-      'Plan Type':           'one-time',
-      'Installment #':       '',
-      'Plan Label':          'Full Payment — ₹28,000',
-      'Amount Paid (₹)':     28000,
-      'Demo Date':           '2026-07-01',
-      'Time Slot':           '6:00 PM',
-      'Mode':                'Live Online',
-      'Razorpay Order ID':   'order_TEST123',
+      'Booking ID': 'TEST-001',
+      'Name': 'Test Student',
+      'Phone': '9999999999',
+      'Email': 'test@test.com',
+      'Student Status': 'Working Professional',
+      'Course': 'AI-Powered Digital Marketing Course',
+      'Message': 'Test row from /api/test-sheets',
+      'Plan Type': 'one-time',
+      'Installment #': '',
+      'Plan Label': 'Full Payment — ₹28,000',
+      'Amount Paid (₹)': 28000,
+      'Demo Date': '2026-07-01',
+      'Time Slot': '6:00 PM',
+      'Mode': 'Live Online',
+      'Razorpay Order ID': 'order_TEST123',
       'Razorpay Payment ID': 'pay_TEST123',
-      'Payment Status':      'paid',
-      'Inst. 2 Due Date':    ''
+      'Payment Status': 'paid',
+      'Inst. 2 Due Date': ''
     });
     res.json({ success: true, message: 'Check your Enrollments sheet tab!' });
   } catch (err) {
@@ -350,27 +350,27 @@ app.get('/api/test-sheets', async (req, res) => {
 app.get('/api/test-enrollment', async (req, res) => {
   try {
     const bookingId = genId('MPF');
-    const today     = new Date().toISOString().split('T')[0];
+    const today = new Date().toISOString().split('T')[0];
 
     const record = {
       bookingId,
-      razorpay_order_id:   'order_SIMULATED',
+      razorpay_order_id: 'order_SIMULATED',
       razorpay_payment_id: 'pay_SIMULATED',
-      name:              'Test Enrollment',
-      phone:             '9999999999',
-      email:             'test@mpulse.com',
-      status:            'Working Professional',
-      course:            'AI-Powered Digital Marketing Course',
-      message:           'Simulated enrollment test',
-      planType:          'one-time',
+      name: 'Test Enrollment',
+      phone: '9999999999',
+      email: 'test@mpulse.com',
+      status: 'Working Professional',
+      course: 'AI-Powered Digital Marketing Course',
+      message: 'Simulated enrollment test',
+      planType: 'one-time',
       installmentNumber: '',
-      planLabel:         'Full Payment — ₹28,000',
-      amountPaid:        28000,
-      date:              today,
-      slot:              '6:00 PM',
-      mode:              'Live Online',
-      type:              'enrollment',
-      paymentStatus:     'paid'
+      planLabel: 'Full Payment — ₹28,000',
+      amountPaid: 28000,
+      date: today,
+      slot: '6:00 PM',
+      mode: 'Live Online',
+      type: 'enrollment',
+      paymentStatus: 'paid'
     };
 
     console.log('TEST: saving to Firestore...');
@@ -379,31 +379,31 @@ app.get('/api/test-enrollment', async (req, res) => {
 
     console.log('TEST: sending to Sheets...');
     await logToSheets('Enrollments', {
-      'Booking ID':          bookingId,
-      'Name':                record.name,
-      'Phone':               record.phone,
-      'Email':               record.email,
-      'Student Status':      record.status,
-      'Course':              record.course,
-      'Message':             record.message,
-      'Plan Type':           record.planType,
-      'Installment #':       record.installmentNumber,
-      'Plan Label':          record.planLabel,
-      'Amount Paid (₹)':     record.amountPaid,
-      'Demo Date':           record.date,
-      'Time Slot':           record.slot,
-      'Mode':                record.mode,
-      'Razorpay Order ID':   record.razorpay_order_id,
+      'Booking ID': bookingId,
+      'Name': record.name,
+      'Phone': record.phone,
+      'Email': record.email,
+      'Student Status': record.status,
+      'Course': record.course,
+      'Message': record.message,
+      'Plan Type': record.planType,
+      'Installment #': record.installmentNumber,
+      'Plan Label': record.planLabel,
+      'Amount Paid (₹)': record.amountPaid,
+      'Demo Date': record.date,
+      'Time Slot': record.slot,
+      'Mode': record.mode,
+      'Razorpay Order ID': record.razorpay_order_id,
       'Razorpay Payment ID': record.razorpay_payment_id,
-      'Payment Status':      record.paymentStatus,
-      'Inst. 2 Due Date':    ''
+      'Payment Status': record.paymentStatus,
+      'Inst. 2 Due Date': ''
     });
     console.log('TEST: Sheets done ✅');
 
     res.json({
-      success:   true,
+      success: true,
       bookingId,
-      message:   'Enrollment test complete — check Firestore + Sheets!'
+      message: 'Enrollment test complete — check Firestore + Sheets!'
     });
   } catch (err) {
     console.error('TEST enrollment error:', err);
@@ -452,36 +452,36 @@ app.post('/api/verify-payment', async (req, res) => {
       return res.status(400).json({ verified: false, error: 'Payment signature mismatch.' });
     }
 
-    const plan      = getPlan(planType, installmentNumber);
+    const plan = getPlan(planType, installmentNumber);
     const bookingId = genId('MPF');
-    const today     = new Date().toISOString().split('T')[0];
+    const today = new Date().toISOString().split('T')[0];
 
     const record = {
       bookingId,
       razorpay_order_id,
       razorpay_payment_id,
-      name:              enrollment?.name    || '',
-      phone:             enrollment?.phone   || '',
-      email:             enrollment?.email   || '',
-      status:            enrollment?.status  || '',
-      course:            enrollment?.course  || '',
-      message:           enrollment?.message || '',
-      planType:          planType            || '',
-      installmentNumber: installmentNumber   || '',
-      planLabel:         plan ? plan.label   : '',
-      amountPaid:        plan ? plan.amount  : 0,
-      date:              enrollment?.date    || '',
-      slot:              enrollment?.slot    || '',
-      mode:              enrollment?.mode    || '',
-      type:              'enrollment',
-      paymentStatus:     'paid'
+      name: enrollment?.name || '',
+      phone: enrollment?.phone || '',
+      email: enrollment?.email || '',
+      status: enrollment?.status || '',
+      course: enrollment?.course || '',
+      message: enrollment?.message || '',
+      planType: planType || '',
+      installmentNumber: installmentNumber || '',
+      planLabel: plan ? plan.label : '',
+      amountPaid: plan ? plan.amount : 0,
+      date: enrollment?.date || '',
+      slot: enrollment?.slot || '',
+      mode: enrollment?.mode || '',
+      type: 'enrollment',
+      paymentStatus: 'paid'
     };
 
     // Track installment 2 due date when installment 1 is paid
     if (planType === 'installments' && parseInt(installmentNumber, 10) === 1) {
       record.installment2DueDate = addOneMonth(today);
-      record.installment2Paid    = false;
-      record.paymentStatus       = 'installment_1_paid';
+      record.installment2Paid = false;
+      record.paymentStatus = 'installment_1_paid';
     }
     if (planType === 'installments' && parseInt(installmentNumber, 10) === 2) {
       record.paymentStatus = 'fully_paid';
@@ -495,24 +495,24 @@ app.post('/api/verify-payment', async (req, res) => {
     // ── Log to Google Sheets ──
     console.log('Sending to Google Sheets...');
     await logToSheets('Enrollments', {
-      'Booking ID':           bookingId,
-      'Name':                 record.name,
-      'Phone':                record.phone,
-      'Email':                record.email,
-      'Student Status':       record.status,
-      'Course':               record.course,
-      'Message':              record.message,
-      'Plan Type':            record.planType,
-      'Installment #':        record.installmentNumber,
-      'Plan Label':           record.planLabel,
-      'Amount Paid (₹)':      record.amountPaid,
-      'Demo Date':            record.date,
-      'Time Slot':            record.slot,
-      'Mode':                 record.mode,
-      'Razorpay Order ID':    razorpay_order_id,
-      'Razorpay Payment ID':  razorpay_payment_id,
-      'Payment Status':       record.paymentStatus,
-      'Inst. 2 Due Date':     record.installment2DueDate || ''
+      'Booking ID': bookingId,
+      'Name': record.name,
+      'Phone': record.phone,
+      'Email': record.email,
+      'Student Status': record.status,
+      'Course': record.course,
+      'Message': record.message,
+      'Plan Type': record.planType,
+      'Installment #': record.installmentNumber,
+      'Plan Label': record.planLabel,
+      'Amount Paid (₹)': record.amountPaid,
+      'Demo Date': record.date,
+      'Time Slot': record.slot,
+      'Mode': record.mode,
+      'Razorpay Order ID': razorpay_order_id,
+      'Razorpay Payment ID': razorpay_payment_id,
+      'Payment Status': record.paymentStatus,
+      'Inst. 2 Due Date': record.installment2DueDate || ''
     });
 
     console.log('✅ Sheets log done');
@@ -570,14 +570,14 @@ app.post('/api/demo-booking', async (req, res) => {
       bookingId,
       name,
       phone,
-      email:   email   || '',
-      status:  status  || '',
-      course:  course  || '',
-      date:    date    || '',
-      slot:    slot    || '',
-      mode:    mode    || '',
+      email: email || '',
+      status: status || '',
+      course: course || '',
+      date: date || '',
+      slot: slot || '',
+      mode: mode || '',
       message: message || '',
-      type:    'demo_booking',
+      type: 'demo_booking',
       paymentStatus: 'free_demo'
     };
 
@@ -586,16 +586,16 @@ app.post('/api/demo-booking', async (req, res) => {
 
     // ── Log to Google Sheets ──
     await logToSheets('Demo Bookings', {
-      'Booking ID':     bookingId,
-      'Name':           record.name,
-      'Phone':          record.phone,
-      'Email':          record.email,
+      'Booking ID': bookingId,
+      'Name': record.name,
+      'Phone': record.phone,
+      'Email': record.email,
       'Student Status': record.status,
-      'Course':         record.course,
-      'Demo Date':      record.date,
-      'Time Slot':      record.slot,
-      'Mode':           record.mode,
-      'Message':        record.message
+      'Course': record.course,
+      'Demo Date': record.date,
+      'Time Slot': record.slot,
+      'Mode': record.mode,
+      'Message': record.message
     });
 
     // ── Email notification ──
@@ -734,7 +734,7 @@ app.get('/api/overdue-students', async (req, res) => {
       return res.status(500).json({ error: 'Firestore is not initialized.' });
     }
 
-    const today    = new Date().toISOString().split('T')[0];
+    const today = new Date().toISOString().split('T')[0];
     const snapshot = await db.collection('enrollments')
       .where('planType', '==', 'installments')
       .where('installmentNumber', '==', 1)
@@ -746,13 +746,13 @@ app.get('/api/overdue-students', async (req, res) => {
       if (d.installment2Paid) return;
       if (d.installment2DueDate && d.installment2DueDate < today) {
         overdue.push({
-          bookingId:   d.bookingId,
-          name:        d.name,
-          phone:       d.phone,
-          email:       d.email,
-          course:      d.course,
-          overdueOn:   'Installment 2 — ₹15,000',
-          dueDate:     d.installment2DueDate,
+          bookingId: d.bookingId,
+          name: d.name,
+          phone: d.phone,
+          email: d.email,
+          course: d.course,
+          overdueOn: 'Installment 2 — ₹15,000',
+          dueDate: d.installment2DueDate,
           daysOverdue: Math.floor((new Date(today) - new Date(d.installment2DueDate)) / 86400000)
         });
       }
@@ -784,7 +784,7 @@ app.post('/api/mark-installment-paid', async (req, res) => {
 
     await db.collection('enrollments').doc(bookingId).update({
       installment2Paid: true,
-      paymentStatus:    'fully_paid'
+      paymentStatus: 'fully_paid'
     });
 
     res.json({ success: true });
@@ -1239,11 +1239,11 @@ app.post('/api/chat', async (req, res) => {
     const geminiKey = process.env.GEMINI_API_KEY;
     if (!geminiKey) {
       return res.json({
-        reply: "Hi! I am Mpu, your AI assistant. It looks like my Google Gemini API Key is not configured yet on Render. However, I can tell you that MPULSE DIGITAL AI offers premium courses in Generative AI, Digital Marketing, and Machine Learning! How can I help you contact our mentors today?"
+        reply: "Hi! I am MDA, your AI assistant. It looks like my Google Gemini API Key is not configured yet on Render. However, I can tell you that MPULSE DIGITAL AI offers premium courses in Generative AI, Digital Marketing, and Machine Learning! How can I help you contact our mentors today?"
       });
     }
 
-    const systemInstruction = `You are Mpu, the friendly AI assistant for MPULSE DIGITAL AI, an institute specializing in AI-powered digital marketing, Machine Learning, Generative AI, and data science courses.
+    const systemInstruction = `You are MDA, the friendly AI assistant for MPULSE DIGITAL AI, an institute specializing in AI-powered digital marketing, Machine Learning, Generative AI, and data science courses.
 Key details to answer users:
 - Location: Local classroom classes & Live Online classes.
 - Courses:
@@ -1297,7 +1297,7 @@ Keep your answers brief, structured with bullet points, and highly engaging!`;
 
     const responseData = await apiResponse.json();
     const reply = responseData.candidates?.[0]?.content?.parts?.[0]?.text || "I couldn't process that. Please try again!";
-    
+
     res.json({ reply });
   } catch (err) {
     console.error('chatbot error:', err);
