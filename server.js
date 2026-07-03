@@ -1243,7 +1243,7 @@ app.post('/api/chat', async (req, res) => {
       });
     }
 
-    const systemInstruction = `You are MDA, the friendly AI assistant for MPULSE DIGITAL AI, an institute specializing in AI-powered digital marketing, Machine Learning, Generative AI, and data science courses.
+    const systemInstruction = `You are MDA, the friendly AI assistant for MPULSE DIGITAL AI, an institute specializing in AI-powered digital marketing, Machine Learning,Digital Marketing, Generative AI, and data science courses.
 Key details to answer users:
 - Location: Local classroom classes & Live Online classes.
 - Courses:
