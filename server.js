@@ -1310,16 +1310,31 @@ Keep your answers brief, structured with bullet points, and highly engaging!`;
 // ─────────────────────────────────────────────────────────────
 app.post('/api/classroom/register-name', async (req, res) => {
   try {
-    const { channelName, uid, name, role, handRaised } = req.body;
+    const { channelName, uid, name, role, handRaised, micAllowed, videoAllowed } = req.body;
     if (!channelName || !uid || !name) {
       return res.status(400).json({ error: 'channelName, uid, and name are required.' });
     }
     
     if (getIsConnected() && models.ClassroomName) {
+      const isTeacher = role === 'publisher';
       const updateFields = { name, role: role || 'student', updatedAt: new Date() };
+      
       if (handRaised !== undefined) {
         updateFields.handRaised = handRaised;
       }
+      
+      if (isTeacher) {
+        updateFields.micAllowed = true;
+        updateFields.videoAllowed = true;
+      } else {
+        if (micAllowed !== undefined) {
+          updateFields.micAllowed = micAllowed;
+        }
+        if (videoAllowed !== undefined) {
+          updateFields.videoAllowed = videoAllowed;
+        }
+      }
+      
       await models.ClassroomName.findOneAndUpdate(
         { channelName, uid: parseInt(uid, 10) },
         updateFields,
@@ -1330,6 +1345,34 @@ app.post('/api/classroom/register-name', async (req, res) => {
   } catch (err) {
     console.error('register-name error:', err);
     res.status(500).json({ error: 'Failed to register name.' });
+  }
+});
+
+app.post('/api/classroom/toggle-permission', async (req, res) => {
+  try {
+    const { channelName, uid, type, allowed } = req.body;
+    if (!channelName || !uid || !type) {
+      return res.status(400).json({ error: 'channelName, uid, and type are required.' });
+    }
+    
+    if (getIsConnected() && models.ClassroomName) {
+      const updateObj = {};
+      if (type === 'mic') {
+        updateObj.micAllowed = allowed;
+      } else if (type === 'video') {
+        updateObj.videoAllowed = allowed;
+      }
+      updateObj.updatedAt = new Date();
+      
+      await models.ClassroomName.findOneAndUpdate(
+        { channelName, uid: parseInt(uid, 10) },
+        { $set: updateObj }
+      );
+    }
+    res.json({ success: true });
+  } catch (err) {
+    console.error('toggle-permission error:', err);
+    res.status(500).json({ error: 'Failed to toggle permission.' });
   }
 });
 

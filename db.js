@@ -150,6 +150,8 @@ const classroomNameSchema = new mongoose.Schema({
   name: { type: String, required: true },
   role: { type: String, default: 'student' },
   handRaised: { type: Boolean, default: false },
+  micAllowed: { type: Boolean, default: false },
+  videoAllowed: { type: Boolean, default: false },
   updatedAt: { type: Date, default: Date.now }
 });
 classroomNameSchema.index({ channelName: 1, uid: 1 }, { unique: true });
