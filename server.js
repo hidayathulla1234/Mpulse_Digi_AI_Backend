@@ -1316,6 +1316,13 @@ app.post('/api/classroom/register-name', async (req, res) => {
     }
     
     if (getIsConnected() && models.ClassroomName) {
+      // 1. Delete duplicate old entries for the same name in this channel to clean up refreshes
+      await models.ClassroomName.deleteMany({
+        channelName,
+        name,
+        uid: { $ne: parseInt(uid, 10) }
+      });
+
       const isTeacher = role === 'publisher';
       const updateFields = { name, role: role || 'student', updatedAt: new Date() };
       
@@ -1376,6 +1383,25 @@ app.post('/api/classroom/toggle-permission', async (req, res) => {
   }
 });
 
+app.post('/api/classroom/heartbeat', async (req, res) => {
+  try {
+    const { channelName, uid } = req.body;
+    if (!channelName || !uid) {
+      return res.status(400).json({ error: 'channelName and uid are required.' });
+    }
+    if (getIsConnected() && models.ClassroomName) {
+      await models.ClassroomName.findOneAndUpdate(
+        { channelName, uid: parseInt(uid, 10) },
+        { $set: { updatedAt: new Date() } }
+      );
+    }
+    res.json({ success: true });
+  } catch (err) {
+    console.error('heartbeat error:', err);
+    res.status(500).json({ error: 'Failed to update heartbeat.' });
+  }
+});
+
 app.get('/api/classroom/names', async (req, res) => {
   try {
     const { channelName } = req.query;
@@ -1385,10 +1411,11 @@ app.get('/api/classroom/names', async (req, res) => {
     
     let mappings = [];
     if (getIsConnected() && models.ClassroomName) {
-      const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+      // Show only members active in the last 25 seconds (live heartbeat threshold)
+      const activeThreshold = new Date(Date.now() - 25 * 1000);
       mappings = await models.ClassroomName.find({
         channelName,
-        updatedAt: { $gte: twoHoursAgo }
+        updatedAt: { $gte: activeThreshold }
       });
     }
     res.json({ mappings });
