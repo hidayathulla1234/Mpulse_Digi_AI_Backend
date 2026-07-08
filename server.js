@@ -1661,6 +1661,300 @@ ${fullTranscript}`
 });
 
 // ─────────────────────────────────────────────────────────────
+// ADMIN AI ASSISTANT (Autonomous Agent with Function Calling)
+// POST /api/admin/assistant
+// Body: { adminKey, message, history }
+// ─────────────────────────────────────────────────────────────
+const assistantTools = [
+  {
+    functionDeclarations: [
+      {
+        name: 'get_enrollments',
+        description: 'Fetch student enrollments from the database. Use this to find student information, payments, and registered courses.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            search: { type: 'STRING', description: 'Name, email, phone, or bookingId to search for.' }
+          }
+        }
+      },
+      {
+        name: 'get_callbacks',
+        description: 'Fetch callback requests from the database. Use this to view pending or completed callback requests.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            status: { type: 'STRING', description: 'Filter by status (pending or completed).' }
+          }
+        }
+      },
+      {
+        name: 'schedule_class',
+        description: 'Schedule a new live cohort class in the database.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            title: { type: 'STRING', description: 'Title of the class.' },
+            date: { type: 'STRING', description: 'Date of the class in YYYY-MM-DD format.' },
+            time: { type: 'STRING', description: 'Time of the class, e.g. 18:00.' },
+            channelName: { type: 'STRING', description: 'Agora channel name (room ID), e.g. mpulse-live.' }
+          },
+          required: ['title', 'date', 'time', 'channelName']
+        }
+      },
+      {
+        name: 'send_email',
+        description: 'Send an email to a student using Nodemailer SMTP.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            toEmail: { type: 'STRING', description: 'Recipient email address.' },
+            subject: { type: 'STRING', description: 'Email subject line.' },
+            body: { type: 'STRING', description: 'Plain text or HTML email body.' }
+          },
+          required: ['toEmail', 'subject', 'body']
+        }
+      },
+      {
+        name: 'mark_installment_paid',
+        description: 'Mark a student\'s second installment as paid.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            bookingId: { type: 'STRING', description: 'Booking ID of the enrollment, e.g. MPF-2026-123456.' }
+          },
+          required: ['bookingId']
+        }
+      },
+      {
+        name: 'get_lms_students',
+        description: 'Fetch the list of registered student accounts in the LMS portal.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {}
+        }
+      },
+      {
+        name: 'toggle_user_paid',
+        description: 'Upgrade or downgrade a student\'s cohort membership status.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            email: { type: 'STRING', description: 'Email of the student.' },
+            isPaid: { type: 'BOOLEAN', description: 'True to upgrade to paid, false to downgrade.' }
+          },
+          required: ['email', 'isPaid']
+        }
+      }
+    ]
+  }
+];
+
+async function executeTool(name, args) {
+  console.log(`[AI Agent Tool] Executing: ${name} with args:`, args);
+  try {
+    if (name === 'get_enrollments') {
+      const { search } = args;
+      if (!getIsConnected()) return { error: 'Database connection unavailable.' };
+      let query = {};
+      if (search) {
+        query = {
+          $or: [
+            { name: new RegExp(search, 'i') },
+            { email: new RegExp(search, 'i') },
+            { phone: new RegExp(search, 'i') },
+            { bookingId: new RegExp(search, 'i') }
+          ]
+        };
+      }
+      const data = await models.Enrollment.find(query).sort({ createdAt: -1 }).limit(10).lean();
+      return { enrollments: data };
+    }
+    
+    if (name === 'get_callbacks') {
+      const { status } = args;
+      if (!getIsConnected()) return { error: 'Database connection unavailable.' };
+      const query = status ? { status } : {};
+      const data = await models.Callback.find(query).sort({ createdAt: -1 }).limit(10).lean();
+      return { callbacks: data };
+    }
+
+    if (name === 'schedule_class') {
+      const { title, date, time, channelName } = args;
+      if (!getIsConnected()) return { error: 'Database connection unavailable.' };
+      const newClass = new models.LiveClass({ title, date, time, channelName });
+      await newClass.save();
+      return { success: true, message: `Class '${title}' scheduled successfully.` };
+    }
+
+    if (name === 'send_email') {
+      const { toEmail, subject, body } = args;
+      if (!transporter) return { error: 'Nodemailer is not initialized' };
+      const info = await transporter.sendMail({
+        from: `"MPULSE DIGITAL AI" <${process.env.EMAIL_USER}>`,
+        to: toEmail,
+        subject,
+        html: body.includes('<') ? body : `<div style="font-family:sans-serif;white-space:pre-wrap;">${body}</div>`
+      });
+      return { success: true, messageId: info.messageId };
+    }
+
+    if (name === 'mark_installment_paid') {
+      const { bookingId } = args;
+      if (!getIsConnected()) return { error: 'Database connection unavailable.' };
+      const updated = await models.Enrollment.findOneAndUpdate(
+        { bookingId },
+        { installment2Paid: true, paymentStatus: 'fully_paid' },
+        { new: true }
+      );
+      if (!updated) return { error: `Enrollment not found for bookingId ${bookingId}` };
+      return { success: true, message: `Marked installment 2 as paid for bookingId ${bookingId}.` };
+    }
+
+    if (name === 'get_lms_students') {
+      if (!getIsConnected()) return { error: 'Database connection unavailable.' };
+      const data = await models.Student.find({}).sort({ createdAt: -1 }).limit(20).lean();
+      return { students: data };
+    }
+
+    if (name === 'toggle_user_paid') {
+      const { email, isPaid } = args;
+      if (!getIsConnected()) return { error: 'Database connection unavailable.' };
+      const student = await models.Student.findOneAndUpdate({ email }, { isPaid }, { new: true });
+      if (!student) return { error: `Student account not found for email ${email}` };
+      return { success: true, message: `Membership status updated to ${isPaid ? 'PAID' : 'FREE'} for ${email}.` };
+    }
+
+    return { error: `Unknown function declaration: ${name}` };
+  } catch (err) {
+    console.error(`Tool execution error [${name}]:`, err);
+    return { error: err.message };
+  }
+}
+
+app.post('/api/admin/assistant', async (req, res) => {
+  try {
+    const { adminKey, message, history } = req.body;
+    if (!adminKey || adminKey !== process.env.ADMIN_KEY) {
+      return res.status(403).json({ error: 'Unauthorized. Invalid adminKey.' });
+    }
+    if (!message) {
+      return res.status(400).json({ error: 'message is required.' });
+    }
+
+    const geminiKey = process.env.GEMINI_API_KEY;
+    if (!geminiKey) {
+      return res.json({
+        reply: "⚠️ Google Gemini API Key is not configured in the `.env` file on this server. Please add `GEMINI_API_KEY=your_key` to enable the Automated AI Admin Assistant.",
+        actionLogs: []
+      });
+    }
+
+    const systemInstruction = `You are the Automated Admin Assistant for the MPULSE DIGITAL AI management portal.
+You have access to administrative tool functions that query student enrollments, callbacks, LMS student accounts, schedule classes, update payment status, and send emails using Nodemailer.
+Follow these guidelines:
+1. Always be polite, professional, and precise.
+2. If the user asks to schedule a class, use 'schedule_class'. Ensure the title is formatted professionally.
+3. If they ask to update a student's payment, use 'mark_installment_paid'.
+4. If they ask to toggle membership status, use 'toggle_user_paid'.
+5. If they request to send an email, use 'send_email'. Write a well-structured, professional email body.
+6. Present database queries (like lists of students, callbacks, or enrollments) using markdown tables or bulleted lists.
+7. Keep the user updated on what actions you are performing.`;
+
+    // Reconstruct conversation history in Gemini REST format
+    let currentContents = [];
+    if (history && Array.isArray(history)) {
+      history.forEach(item => {
+        currentContents.push({
+          role: item.role === 'user' ? 'user' : 'model',
+          parts: [{ text: item.text }]
+        });
+      });
+    }
+    
+    // Add user's latest query
+    currentContents.push({
+      role: 'user',
+      parts: [{ text: message }]
+    });
+
+    let loopCount = 0;
+    const maxLoops = 5;
+    let finalResponseText = '';
+    const actionLogs = [];
+
+    while (loopCount < maxLoops) {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: currentContents,
+          tools: assistantTools,
+          systemInstruction: {
+            parts: [{ text: systemInstruction }]
+          }
+        })
+      });
+
+      const data = await response.json();
+      
+      if (!data.candidates || data.candidates.length === 0) {
+        throw new Error(data.error ? data.error.message : JSON.stringify(data));
+      }
+
+      const candidate = data.candidates[0];
+      const modelContent = candidate.content;
+      
+      // Append model content to history
+      currentContents.push(modelContent);
+
+      const parts = modelContent.parts || [];
+      const functionCalls = parts.filter(p => p.functionCall);
+
+      if (functionCalls.length === 0) {
+        finalResponseText = parts.map(p => p.text || '').join('\n');
+        break;
+      }
+
+      // Execute function calls
+      const functionResponseParts = [];
+      for (const fc of functionCalls) {
+        const { name, args } = fc.functionCall;
+        
+        // Log action details
+        actionLogs.push({ name, args, timestamp: new Date() });
+
+        const result = await executeTool(name, args);
+
+        functionResponseParts.push({
+          functionResponse: {
+            name,
+            response: { result }
+          }
+        });
+      }
+
+      // Append function response content
+      currentContents.push({
+        role: 'function',
+        parts: functionResponseParts
+      });
+
+      loopCount++;
+    }
+
+    res.json({
+      reply: finalResponseText || "I have processed your request.",
+      actionLogs
+    });
+
+  } catch (err) {
+    console.error('AI Admin Assistant error:', err);
+    res.status(500).json({ error: 'Failed to run AI Admin Assistant: ' + err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
 // START
 // ─────────────────────────────────────────────────────────────
 app.listen(PORT, () => console.log(`✅  MPULSE backend running on port ${PORT}`));
