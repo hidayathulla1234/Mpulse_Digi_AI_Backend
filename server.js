@@ -44,7 +44,7 @@ app.use(cors({
 }));
 app.use(express.json());
 const path = require('path');
-app.use(express.static(path.join(__dirname, '../forntend')));
+app.use(express.static(path.join(__dirname, '../frontend')));
 app.use('/api/', rateLimit({ windowMs: 15 * 60 * 1000, max: 60, message: { error: 'Too many requests. Try again later.' } }));
 
 // ─────────────────────────────────────────────────────────────
@@ -931,6 +931,23 @@ app.post('/api/admin/delete-item', async (req, res) => {
 // LMS & MEMBERSHIP SYSTEM API
 // ─────────────────────────────────────────────────────────────
 
+// Password Hashing Utility Functions (PBKDF2)
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.pbkdf2Sync(password, salt, 1000, 64, 'sha512').toString('hex');
+  return `${salt}:${hash}`;
+}
+
+function verifyPassword(password, storedPassword) {
+  if (!storedPassword || !storedPassword.includes(':')) {
+    // Legacy plain text fallback
+    return password === storedPassword;
+  }
+  const [salt, hash] = storedPassword.split(':');
+  const checkHash = crypto.pbkdf2Sync(password, salt, 1000, 64, 'sha512').toString('hex');
+  return hash === checkHash;
+}
+
 // 1. Student Signup
 app.post('/api/auth/signup', async (req, res) => {
   try {
@@ -960,7 +977,7 @@ app.post('/api/auth/signup', async (req, res) => {
       name,
       email,
       phone,
-      password, // Simple text storage for ease of use in demo/dev
+      password: hashPassword(password),
       isPaid
     });
 
@@ -984,9 +1001,16 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(503).json({ error: 'Database connection unavailable.' });
     }
 
-    const student = await models.Student.findOne({ email, password });
-    if (!student) {
+    const student = await models.Student.findOne({ email });
+    if (!student || !verifyPassword(password, student.password)) {
       return res.status(401).json({ error: 'Invalid email or password.' });
+    }
+
+    // Upgrade plain-text passwords to secure hash on login
+    if (!student.password.includes(':')) {
+      student.password = hashPassword(password);
+      await student.save();
+      console.log(`🔒 Upgraded password to secure hash for student: ${email}`);
     }
 
     // Refresh membership paid status dynamically if they enrolled recently
@@ -1333,7 +1357,9 @@ app.post('/api/classroom/register-name', async (req, res) => {
       if (isTeacher) {
         updateFields.micAllowed = true;
         updateFields.videoAllowed = true;
+        updateFields.approved = true;
       } else {
+        updateFields.approved = (req.body.approved !== undefined) ? req.body.approved : false;
         if (micAllowed !== undefined) {
           updateFields.micAllowed = micAllowed;
         }
@@ -1341,6 +1367,8 @@ app.post('/api/classroom/register-name', async (req, res) => {
           updateFields.videoAllowed = videoAllowed;
         }
       }
+      updateFields.kicked = (req.body.kicked !== undefined) ? req.body.kicked : false;
+      updateFields.spotlight = (req.body.spotlight !== undefined) ? req.body.spotlight : false;
       
       await models.ClassroomName.findOneAndUpdate(
         { channelName, uid: parseInt(uid, 10) },
@@ -1411,8 +1439,8 @@ app.get('/api/classroom/names', async (req, res) => {
     
     let mappings = [];
     if (getIsConnected() && models.ClassroomName) {
-      // Show only members active in the last 25 seconds (live heartbeat threshold)
-      const activeThreshold = new Date(Date.now() - 25 * 1000);
+      // Show only members active in the last 40 seconds (safe margin above 10s heartbeat)
+      const activeThreshold = new Date(Date.now() - 40 * 1000);
       mappings = await models.ClassroomName.find({
         channelName,
         updatedAt: { $gte: activeThreshold }
@@ -1422,6 +1450,215 @@ app.get('/api/classroom/names', async (req, res) => {
   } catch (err) {
     console.error('get-names error:', err);
     res.status(500).json({ error: 'Failed to retrieve names.' });
+  }
+});
+
+app.post('/api/classroom/approve', async (req, res) => {
+  try {
+    const { channelName, uid } = req.body;
+    if (!channelName || !uid) {
+      return res.status(400).json({ error: 'channelName and uid are required.' });
+    }
+
+    if (getIsConnected() && models.ClassroomName) {
+      await models.ClassroomName.findOneAndUpdate(
+        { channelName, uid: parseInt(uid, 10) },
+        { $set: { approved: true, updatedAt: new Date() } }
+      );
+    }
+    res.json({ success: true });
+  } catch (err) {
+    console.error('approve error:', err);
+    res.status(500).json({ error: 'Failed to approve user.' });
+  }
+});
+
+app.post('/api/classroom/kick', async (req, res) => {
+  try {
+    const { channelName, uid } = req.body;
+    if (!channelName || !uid) {
+      return res.status(400).json({ error: 'channelName and uid are required.' });
+    }
+
+    if (getIsConnected() && models.ClassroomName) {
+      await models.ClassroomName.findOneAndUpdate(
+        { channelName, uid: parseInt(uid, 10) },
+        { $set: { kicked: true, updatedAt: new Date() } }
+      );
+    }
+    res.json({ success: true });
+  } catch (err) {
+    console.error('kick error:', err);
+    res.status(500).json({ error: 'Failed to kick user.' });
+  }
+});
+
+app.post('/api/classroom/spotlight', async (req, res) => {
+  try {
+    const { channelName, uid } = req.body;
+    
+    if (getIsConnected() && models.ClassroomName) {
+      await models.ClassroomName.updateMany(
+        { channelName },
+        { $set: { spotlight: false } }
+      );
+      
+      if (uid) {
+        await models.ClassroomName.findOneAndUpdate(
+          { channelName, uid: parseInt(uid, 10) },
+          { $set: { spotlight: true, updatedAt: new Date() } }
+        );
+      }
+    }
+    res.json({ success: true });
+  } catch (err) {
+    console.error('spotlight error:', err);
+    res.status(500).json({ error: 'Failed to spotlight user.' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// CLASSROOM CHAT  (real-time synced chat — persisted in MongoDB)
+// POST /api/classroom/chat   — send a message
+// GET  /api/classroom/chat   — fetch last N messages (polling)
+// ─────────────────────────────────────────────────────────────
+app.post('/api/classroom/chat', async (req, res) => {
+  try {
+    const { channelName, sender, text, isTeacher } = req.body;
+    if (!channelName || !sender || !text) {
+      return res.status(400).json({ error: 'channelName, sender, and text are required.' });
+    }
+
+    // Sanitize text — strip HTML tags
+    const safeText = String(text).replace(/<[^>]*>/g, '').trim().slice(0, 1000);
+    const safeSender = String(sender).replace(/<[^>]*>/g, '').trim().slice(0, 100);
+
+    if (!safeText) return res.status(400).json({ error: 'Message text is empty after sanitization.' });
+
+    if (getIsConnected() && models.ClassroomChat) {
+      await models.ClassroomChat.create({
+        channelName,
+        sender: safeSender,
+        text: safeText,
+        isTeacher: !!isTeacher
+      });
+    }
+    res.json({ success: true });
+  } catch (err) {
+    console.error('chat send error:', err);
+    res.status(500).json({ error: 'Failed to save chat message.' });
+  }
+});
+
+app.get('/api/classroom/chat', async (req, res) => {
+  try {
+    const { channelName, since } = req.query;
+    if (!channelName) {
+      return res.status(400).json({ error: 'channelName is required.' });
+    }
+
+    let messages = [];
+    if (getIsConnected() && models.ClassroomChat) {
+      const query = { channelName };
+      if (since) {
+        query.createdAt = { $gt: new Date(since) };
+      }
+      messages = await models.ClassroomChat
+        .find(query)
+        .sort({ createdAt: 1 })
+        .limit(200)
+        .lean();
+    }
+    res.json({ messages });
+  } catch (err) {
+    console.error('chat fetch error:', err);
+    res.status(500).json({ error: 'Failed to fetch chat messages.' });
+  }
+});
+
+app.post('/api/classroom/transcript', async (req, res) => {
+  try {
+    const { channelName, sender, text } = req.body;
+    if (!channelName || !sender || !text) {
+      return res.status(400).json({ error: 'channelName, sender, and text are required.' });
+    }
+
+    if (getIsConnected() && models.ClassroomTranscript) {
+      await models.ClassroomTranscript.create({ channelName, sender, text });
+    }
+    res.json({ success: true });
+  } catch (err) {
+    console.error('transcript error:', err);
+    res.status(500).json({ error: 'Failed to record transcript.' });
+  }
+});
+
+app.post('/api/classroom/summarize', async (req, res) => {
+  try {
+    const { channelName } = req.body;
+    if (!channelName) {
+      return res.status(400).json({ error: 'channelName is required.' });
+    }
+
+    if (getIsConnected() && models.ClassroomTranscript && models.ClassroomSummary) {
+      const lines = await models.ClassroomTranscript.find({ channelName }).sort({ createdAt: 1 });
+      if (lines.length === 0) {
+        return res.json({ summary: "No lecture captions recorded yet to summarize." });
+      }
+
+      const fullTranscript = lines.map(l => `${l.sender}: ${l.text}`).join('\n');
+      const apiKey = process.env.GEMINI_API_KEY;
+      
+      if (!apiKey) {
+        const fallbackSummary = `### Classroom Lecture Summary (${channelName})\n\n**Key Topics:**\n- Live class session starting.\n\n*Note: Add GEMINI_API_KEY to your backend .env file to enable live AI summaries.*`;
+        await models.ClassroomSummary.findOneAndUpdate(
+          { channelName },
+          { summary: fallbackSummary },
+          { upsert: true, new: true }
+        );
+        return res.json({ summary: fallbackSummary });
+      }
+
+      const fetch = require('node-fetch');
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            parts: [{
+              text: `You are a Principal AI Classroom Summarizer. Review the following transcription script from a live online classroom session. Generate a structured markdown summary containing:
+1. Key topics discussed
+2. Chronological action items
+3. Live Q&A log highlights
+
+Transcript:
+${fullTranscript}`
+            }]
+          }]
+        })
+      });
+
+      const data = await response.json();
+      let summary = "";
+      if (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts[0]) {
+        summary = data.candidates[0].content.parts[0].text;
+      } else {
+        throw new Error(JSON.stringify(data));
+      }
+
+      await models.ClassroomSummary.findOneAndUpdate(
+        { channelName },
+        { summary },
+        { upsert: true, new: true }
+      );
+
+      res.json({ summary });
+    } else {
+      res.status(500).json({ error: 'Database connection offline.' });
+    }
+  } catch (err) {
+    console.error('summarize error:', err);
+    res.status(500).json({ error: 'Failed to generate classroom summary: ' + err.message });
   }
 });
 

@@ -152,10 +152,41 @@ const classroomNameSchema = new mongoose.Schema({
   handRaised: { type: Boolean, default: false },
   micAllowed: { type: Boolean, default: false },
   videoAllowed: { type: Boolean, default: false },
+  approved: { type: Boolean, default: false },
+  kicked: { type: Boolean, default: false },
+  spotlight: { type: Boolean, default: false },
   updatedAt: { type: Date, default: Date.now }
 });
 classroomNameSchema.index({ channelName: 1, uid: 1 }, { unique: true });
 const ClassroomName = mongoose.models.ClassroomName || mongoose.model('ClassroomName', classroomNameSchema);
+
+// 11. ClassroomTranscript Model
+const classroomTranscriptSchema = new mongoose.Schema({
+  channelName: { type: String, required: true },
+  sender: { type: String, required: true },
+  text: { type: String, required: true },
+  createdAt: { type: Date, default: Date.now }
+});
+const ClassroomTranscript = mongoose.models.ClassroomTranscript || mongoose.model('ClassroomTranscript', classroomTranscriptSchema);
+
+// 12. ClassroomSummary Model
+const classroomSummarySchema = new mongoose.Schema({
+  channelName: { type: String, required: true },
+  summary: { type: String, required: true },
+  createdAt: { type: Date, default: Date.now }
+});
+const ClassroomSummary = mongoose.models.ClassroomSummary || mongoose.model('ClassroomSummary', classroomSummarySchema);
+
+// 13. ClassroomChat Model — persists synced chat messages for all participants
+const classroomChatSchema = new mongoose.Schema({
+  channelName: { type: String, required: true },
+  sender:      { type: String, required: true },
+  text:        { type: String, required: true },
+  isTeacher:   { type: Boolean, default: false },
+  createdAt:   { type: Date, default: Date.now }
+});
+classroomChatSchema.index({ channelName: 1, createdAt: 1 });
+const ClassroomChat = mongoose.models.ClassroomChat || mongoose.model('ClassroomChat', classroomChatSchema);
 
 // Exporting connection function and models
 module.exports = {
@@ -170,7 +201,10 @@ module.exports = {
     LiveClass,
     Recording,
     Resource,
-    ClassroomName
+    ClassroomName,
+    ClassroomTranscript,
+    ClassroomSummary,
+    ClassroomChat
   },
   getIsConnected: () => isConnected
 };
