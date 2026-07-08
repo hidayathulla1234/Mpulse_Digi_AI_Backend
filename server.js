@@ -1842,10 +1842,12 @@ app.post('/api/admin/assistant', async (req, res) => {
       return res.status(400).json({ error: 'message is required.' });
     }
 
+    const groqKey = process.env.GROQ_API_KEY;
     const geminiKey = process.env.GEMINI_API_KEY;
-    if (!geminiKey) {
+
+    if (!groqKey && !geminiKey) {
       return res.json({
-        reply: "⚠️ Google Gemini API Key is not configured in the `.env` file on this server. Please add `GEMINI_API_KEY=your_key` to enable the Automated AI Admin Assistant.",
+        reply: "⚠️ No API Key configured. Please add either `GROQ_API_KEY=your_key` or `GEMINI_API_KEY=your_key` in the `.env` file on this server to enable the Automated AI Admin Assistant.",
         actionLogs: []
       });
     }
@@ -1861,7 +1863,112 @@ Follow these guidelines:
 6. Present database queries (like lists of students, callbacks, or enrollments) using markdown tables or bulleted lists.
 7. Keep the user updated on what actions you are performing.`;
 
-    // Reconstruct conversation history in Gemini REST format
+    // ─────────────────────────────────────────────────────────────
+    // CASE A: GROQ AGENT LOOP (If GROQ_API_KEY is present)
+    // ─────────────────────────────────────────────────────────────
+    if (groqKey) {
+      const groqTools = assistantTools[0].functionDeclarations.map(fd => {
+        const cleanParams = { type: "object", properties: {} };
+        if (fd.parameters && fd.parameters.properties) {
+          for (const key of Object.keys(fd.parameters.properties)) {
+            const prop = fd.parameters.properties[key];
+            cleanParams.properties[key] = {
+              type: prop.type.toLowerCase(),
+              description: prop.description
+            };
+          }
+        }
+        if (fd.parameters && fd.parameters.required) {
+          cleanParams.required = fd.parameters.required;
+        }
+        return {
+          type: "function",
+          function: {
+            name: fd.name,
+            description: fd.description,
+            parameters: cleanParams
+          }
+        };
+      });
+
+      let messages = [];
+      messages.push({ role: 'system', content: systemInstruction });
+      if (history && Array.isArray(history)) {
+        history.forEach(item => {
+          messages.push({
+            role: item.role === 'user' ? 'user' : 'assistant',
+            content: item.text
+          });
+        });
+      }
+      messages.push({ role: 'user', content: message });
+
+      let loopCount = 0;
+      const maxLoops = 5;
+      let finalResponseText = '';
+      const actionLogs = [];
+
+      while (loopCount < maxLoops) {
+        const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${groqKey}`
+          },
+          body: JSON.stringify({
+            model: 'llama-3.3-70b-specdec',
+            messages,
+            tools: groqTools,
+            tool_choice: 'auto'
+          })
+        });
+
+        const data = await response.json();
+        if (!data.choices || data.choices.length === 0) {
+          throw new Error(data.error ? data.error.message : JSON.stringify(data));
+        }
+
+        const choice = data.choices[0];
+        const assistantMessage = choice.message;
+        messages.push(assistantMessage);
+
+        const toolCalls = assistantMessage.tool_calls;
+        if (!toolCalls || toolCalls.length === 0) {
+          finalResponseText = assistantMessage.content || '';
+          break;
+        }
+
+        for (const tc of toolCalls) {
+          const { name, arguments: argsString } = tc.function;
+          let args = {};
+          try {
+            args = JSON.parse(argsString);
+          } catch (e) {
+            console.error('Failed to parse tool arguments:', argsString);
+          }
+
+          actionLogs.push({ name, args, timestamp: new Date() });
+          const result = await executeTool(name, args);
+
+          messages.push({
+            role: 'tool',
+            tool_call_id: tc.id,
+            name,
+            content: JSON.stringify(result)
+          });
+        }
+        loopCount++;
+      }
+
+      return res.json({
+        reply: finalResponseText || "I have completed your request.",
+        actionLogs
+      });
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // CASE B: GEMINI AGENT LOOP (Fallback to Gemini if no GROQ_API_KEY)
+    // ─────────────────────────────────────────────────────────────
     let currentContents = [];
     if (history && Array.isArray(history)) {
       history.forEach(item => {
@@ -1871,8 +1978,6 @@ Follow these guidelines:
         });
       });
     }
-    
-    // Add user's latest query
     currentContents.push({
       role: 'user',
       parts: [{ text: message }]
@@ -1897,15 +2002,12 @@ Follow these guidelines:
       });
 
       const data = await response.json();
-      
       if (!data.candidates || data.candidates.length === 0) {
         throw new Error(data.error ? data.error.message : JSON.stringify(data));
       }
 
       const candidate = data.candidates[0];
       const modelContent = candidate.content;
-      
-      // Append model content to history
       currentContents.push(modelContent);
 
       const parts = modelContent.parts || [];
@@ -1916,14 +2018,10 @@ Follow these guidelines:
         break;
       }
 
-      // Execute function calls
       const functionResponseParts = [];
       for (const fc of functionCalls) {
         const { name, args } = fc.functionCall;
-        
-        // Log action details
         actionLogs.push({ name, args, timestamp: new Date() });
-
         const result = await executeTool(name, args);
 
         functionResponseParts.push({
@@ -1934,12 +2032,10 @@ Follow these guidelines:
         });
       }
 
-      // Append function response content
       currentContents.push({
         role: 'function',
         parts: functionResponseParts
       });
-
       loopCount++;
     }
 
