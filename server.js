@@ -1916,7 +1916,7 @@ Follow these guidelines:
             'Authorization': `Bearer ${groqKey}`
           },
           body: JSON.stringify({
-            model: 'llama-3.3-70b-specdec',
+            model: 'llama-3.3-70b-versatile',
             messages,
             tools: groqTools,
             tool_choice: 'auto'
