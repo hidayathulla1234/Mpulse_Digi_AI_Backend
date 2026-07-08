@@ -1222,10 +1222,8 @@ app.get('/api/agora-token', (req, res) => {
       return res.status(400).json({ error: 'channelName is required.' });
     }
 
-    let role = RtcRole.SUBSCRIBER;
-    if (req.query.role === 'publisher') {
-      role = RtcRole.PUBLISHER;
-    }
+    // Always build tokens with PUBLISHER role so that students can seamlessly publish audio/video when promoted to speakers/hosts
+    const role = RtcRole.PUBLISHER;
 
     const uid = parseInt(req.query.uid, 10) || 0;
     const expirationTimeInSeconds = 7200; // 2 hours
