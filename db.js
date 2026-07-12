@@ -5,7 +5,10 @@ const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/mpulse
 let isConnected = false;
 
 async function connectDB() {
-  if (isConnected) return;
+  if (mongoose.connection.readyState === 1) {
+    isConnected = true;
+    return;
+  }
   try {
     if (!process.env.MONGODB_URI) {
       console.warn("⚠️ MONGODB_URI not set. Attempting local MongoDB connection to mongodb://127.0.0.1:27017/mpulse");
@@ -16,6 +19,7 @@ async function connectDB() {
     isConnected = true;
     console.log("✅ MongoDB connected successfully!");
   } catch (err) {
+    isConnected = false;
     console.error("❌ MongoDB connection failed:", err.message);
     console.warn("⚠️ Server will run with database operations disabled or mocked!");
   }
@@ -206,6 +210,14 @@ module.exports = {
     ClassroomSummary,
     ClassroomChat
   },
-  getIsConnected: () => isConnected
+  getIsConnected: () => {
+    const connected = mongoose.connection.readyState === 1;
+    isConnected = connected;
+    if (!connected && mongoose.connection.readyState === 0) {
+      console.log("🔄 Database connection unavailable. Attempting reconnection...");
+      connectDB().catch(() => {});
+    }
+    return connected;
+  }
 };
 
