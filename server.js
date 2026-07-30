@@ -14,6 +14,7 @@ const { RtcTokenBuilder, RtcRole } = require('agora-token');
 const app = express();
 connectDB();
 const PORT = process.env.PORT || 5000;
+const ADMIN_KEY = process.env.ADMIN_KEY || 'mpulseadmin';
 app.set('trust proxy', 1);
 
 // ─────────────────────────────────────────────────────────────
@@ -727,7 +728,7 @@ app.post('/api/signup', async (req, res) => {
 // ─────────────────────────────────────────────────────────────
 app.get('/api/overdue-students', async (req, res) => {
   try {
-    if (req.query.adminKey !== process.env.ADMIN_KEY)
+    if (req.query.adminKey !== ADMIN_KEY)
       return res.status(403).json({ error: 'Unauthorized.' });
 
     if (!db) {
@@ -773,7 +774,7 @@ app.get('/api/overdue-students', async (req, res) => {
 app.post('/api/mark-installment-paid', async (req, res) => {
   try {
     const { adminKey, bookingId } = req.body;
-    if (adminKey !== process.env.ADMIN_KEY)
+    if (adminKey !== ADMIN_KEY)
       return res.status(403).json({ error: 'Unauthorized.' });
     if (!bookingId)
       return res.status(400).json({ error: 'bookingId is required.' });
@@ -801,7 +802,7 @@ app.post('/api/mark-installment-paid', async (req, res) => {
 app.get('/api/admin/all-data', async (req, res) => {
   try {
     const { adminKey } = req.query;
-    if (!adminKey || adminKey !== process.env.ADMIN_KEY) {
+    if (!adminKey || adminKey !== ADMIN_KEY) {
       return res.status(403).json({ error: 'Unauthorized. Invalid adminKey.' });
     }
 
@@ -832,7 +833,7 @@ app.get('/api/admin/all-data', async (req, res) => {
 app.post('/api/admin/update-callback-status', async (req, res) => {
   try {
     const { adminKey, callbackId, status } = req.body;
-    if (!adminKey || adminKey !== process.env.ADMIN_KEY) {
+    if (!adminKey || adminKey !== ADMIN_KEY) {
       return res.status(403).json({ error: 'Unauthorized. Invalid adminKey.' });
     }
     if (!callbackId || !status) {
@@ -862,7 +863,7 @@ app.post('/api/admin/update-callback-status', async (req, res) => {
 app.post('/api/admin/delete-item', async (req, res) => {
   try {
     const { adminKey, type, id } = req.body;
-    if (!adminKey || adminKey !== process.env.ADMIN_KEY) {
+    if (!adminKey || adminKey !== ADMIN_KEY) {
       return res.status(403).json({ error: 'Unauthorized. Invalid adminKey.' });
     }
     if (!type || !id) {
@@ -1072,7 +1073,7 @@ app.get('/api/student/portal-data', async (req, res) => {
 app.post('/api/admin/schedule-class', async (req, res) => {
   try {
     const { adminKey, title, date, time, channelName } = req.body;
-    if (!adminKey || adminKey !== process.env.ADMIN_KEY) {
+    if (!adminKey || adminKey !== ADMIN_KEY) {
       return res.status(403).json({ error: 'Unauthorized.' });
     }
     if (!title || !date || !time || !channelName) {
@@ -1094,7 +1095,7 @@ app.post('/api/admin/schedule-class', async (req, res) => {
 app.post('/api/admin/upload-recording', async (req, res) => {
   try {
     const { adminKey, title, videoUrl } = req.body;
-    if (!adminKey || adminKey !== process.env.ADMIN_KEY) {
+    if (!adminKey || adminKey !== ADMIN_KEY) {
       return res.status(403).json({ error: 'Unauthorized.' });
     }
     if (!title || !videoUrl) {
@@ -1116,7 +1117,7 @@ app.post('/api/admin/upload-recording', async (req, res) => {
 app.post('/api/admin/upload-resource', async (req, res) => {
   try {
     const { adminKey, title, fileUrl, type } = req.body;
-    if (!adminKey || adminKey !== process.env.ADMIN_KEY) {
+    if (!adminKey || adminKey !== ADMIN_KEY) {
       return res.status(403).json({ error: 'Unauthorized.' });
     }
     if (!title || !fileUrl) {
@@ -1138,7 +1139,7 @@ app.post('/api/admin/upload-resource', async (req, res) => {
 app.post('/api/admin/toggle-user-paid', async (req, res) => {
   try {
     const { adminKey, email, isPaid } = req.body;
-    if (!adminKey || adminKey !== process.env.ADMIN_KEY) {
+    if (!adminKey || adminKey !== ADMIN_KEY) {
       return res.status(403).json({ error: 'Unauthorized.' });
     }
 
@@ -1156,7 +1157,7 @@ app.post('/api/admin/toggle-user-paid', async (req, res) => {
 app.get('/api/admin/lms-students', async (req, res) => {
   try {
     const { adminKey } = req.query;
-    if (!adminKey || adminKey !== process.env.ADMIN_KEY) {
+    if (!adminKey || adminKey !== ADMIN_KEY) {
       return res.status(403).json({ error: 'Unauthorized.' });
     }
 
@@ -1803,7 +1804,7 @@ async function executeTool(name, args) {
 app.post('/api/admin/assistant', async (req, res) => {
   try {
     const { adminKey, message, history } = req.body;
-    if (!adminKey || adminKey !== process.env.ADMIN_KEY) {
+    if (!adminKey || adminKey !== ADMIN_KEY) {
       return res.status(403).json({ error: 'Unauthorized. Invalid adminKey.' });
     }
     if (!message) {
