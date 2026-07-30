@@ -811,27 +811,11 @@ app.get('/api/admin/all-data', async (req, res) => {
     let signups = [];
     let demoBookings = [];
 
-    if (getIsConnected()) {
-      enrollments = await models.Enrollment.find({}).sort({ createdAt: -1 });
-      callbacks = await models.Callback.find({}).sort({ createdAt: -1 });
-      enquiries = await models.Enquiry.find({}).sort({ createdAt: -1 });
-      signups = await models.Signup.find({}).sort({ createdAt: -1 });
-      demoBookings = await models.DemoBooking.find({}).sort({ createdAt: -1 });
-    } else if (db) {
-      const snapEnr = await db.collection('enrollments').get();
-      const snapCb = await db.collection('callbacks').get();
-      const snapEnq = await db.collection('enquiries').get();
-      const snapSu = await db.collection('signups').get();
-      const snapDb = await db.collection('demo_bookings').get();
-
-      snapEnr.forEach(doc => enrollments.push(doc.data()));
-      snapCb.forEach(doc => callbacks.push(doc.data()));
-      snapEnq.forEach(doc => enquiries.push(doc.data()));
-      snapSu.forEach(doc => signups.push(doc.data()));
-      snapDb.forEach(doc => demoBookings.push(doc.data()));
-    } else {
-      return res.status(503).json({ error: 'No database connection available.' });
-    }
+    enrollments = await models.Enrollment.find({}).sort({ createdAt: -1 });
+    callbacks = await models.Callback.find({}).sort({ createdAt: -1 });
+    enquiries = await models.Enquiry.find({}).sort({ createdAt: -1 });
+    signups = await models.Signup.find({}).sort({ createdAt: -1 });
+    demoBookings = await models.DemoBooking.find({}).sort({ createdAt: -1 });
 
     res.json({ enrollments, callbacks, enquiries, signups, demoBookings });
   } catch (err) {
@@ -956,9 +940,7 @@ app.post('/api/auth/signup', async (req, res) => {
       return res.status(400).json({ error: 'All fields are required.' });
     }
 
-    if (!getIsConnected()) {
-      return res.status(503).json({ error: 'Database connection unavailable.' });
-    }
+
 
     // Check if user already exists
     const existing = await models.Student.findOne({ email });
@@ -997,9 +979,7 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(400).json({ error: 'Email and password are required.' });
     }
 
-    if (!getIsConnected()) {
-      return res.status(503).json({ error: 'Database connection unavailable.' });
-    }
+
 
     const student = await models.Student.findOne({ email });
     if (!student || !verifyPassword(password, student.password)) {
@@ -1046,9 +1026,7 @@ app.get('/api/student/portal-data', async (req, res) => {
       return res.status(400).json({ error: 'email query parameter is required.' });
     }
 
-    if (!getIsConnected()) {
-      return res.status(503).json({ error: 'Database connection unavailable.' });
-    }
+
 
     const student = await models.Student.findOne({ email });
     if (!student) {
@@ -1101,9 +1079,7 @@ app.post('/api/admin/schedule-class', async (req, res) => {
       return res.status(400).json({ error: 'All fields are required.' });
     }
 
-    if (!getIsConnected()) {
-      return res.status(503).json({ error: 'Database connection unavailable.' });
-    }
+
 
     const newClass = new models.LiveClass({ title, date, time, channelName });
     await newClass.save();
@@ -1125,9 +1101,7 @@ app.post('/api/admin/upload-recording', async (req, res) => {
       return res.status(400).json({ error: 'All fields are required.' });
     }
 
-    if (!getIsConnected()) {
-      return res.status(503).json({ error: 'Database connection unavailable.' });
-    }
+
 
     const newRec = new models.Recording({ title, videoUrl });
     await newRec.save();
@@ -1149,9 +1123,7 @@ app.post('/api/admin/upload-resource', async (req, res) => {
       return res.status(400).json({ error: 'All fields are required.' });
     }
 
-    if (!getIsConnected()) {
-      return res.status(503).json({ error: 'Database connection unavailable.' });
-    }
+
 
     const newRes = new models.Resource({ title, fileUrl, type });
     await newRes.save();
@@ -1170,9 +1142,7 @@ app.post('/api/admin/toggle-user-paid', async (req, res) => {
       return res.status(403).json({ error: 'Unauthorized.' });
     }
 
-    if (!getIsConnected()) {
-      return res.status(503).json({ error: 'Database connection unavailable.' });
-    }
+
 
     await models.Student.findOneAndUpdate({ email }, { isPaid });
     res.json({ success: true, message: `Membership status updated for ${email}` });
@@ -1190,9 +1160,7 @@ app.get('/api/admin/lms-students', async (req, res) => {
       return res.status(403).json({ error: 'Unauthorized.' });
     }
 
-    if (!getIsConnected()) {
-      return res.status(503).json({ error: 'Database connection unavailable.' });
-    }
+
 
     const students = await models.Student.find({}).sort({ createdAt: -1 });
     res.json({ students });
